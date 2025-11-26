@@ -10,18 +10,16 @@ public class PSO {
     //  Configuración y Parámetros
     // ============================================================
     private final int maxIteraciones = 250;
-    private final int maxPoblacion = 100;
+    private final int maxPoblacion = 500;
     private final int dimension;
     
     // Parámetros MOPSO
-    private final int tamanoArchivo = 100;
+    private final int tamanoArchivo = 500;
     private final double tasaMutacion = 0.6;
 
     // Datos
     private static double[][] retornos;
     private final Random rnd = new Random();
-    private final double floor = 0.0;
-    private final double ceiling = 1.0;
 
     // Estado Single-Objective (SO)
     private Particula[] poblacion;
@@ -113,7 +111,6 @@ public class PSO {
                 actualizarFisica(p, mejorGlobalSO.pbestPos, 0.4, 1.5, 1.5);
                 
                 // 2. Restricciones
-                //aplicarLimites(p);
                 normalizar(p.x);
 
                 // 3. Evaluar
@@ -171,14 +168,12 @@ public class PSO {
                 double[] guia = (lider != null) ? lider.pos : p.pbestPos;
 
                 // b. Movimiento (Inercia + Cognitivo + Social)
-                // Usamos coeficientes ligeramente más altos en MOPSO para exploración
                 actualizarFisica(p, guia, 0.4, 1.8, 1.8); 
                 
                 // c. Mutación (Turbulencia) - Exclusivo de MOPSO
                 //aplicarMutacion(p, t);
 
-                // d. Límites
-                //aplicarLimites(p);
+                // d. Aplicar restricciones
                 normalizar(p.x);
 
                 // e. Evaluación
@@ -221,22 +216,9 @@ public class PSO {
         }
     }
 
-    private void aplicarLimites(Particula p) {
-        for (int j = 0; j < dimension; j++) {
-            if (p.x[j] < floor) {
-                p.x[j] = floor;
-                p.v[j] *= -1; // Rebote
-            }
-            if (p.x[j] > ceiling) {
-                p.x[j] = ceiling;
-                p.v[j] *= -1; // Rebote
-            }
-        }
-        normalizar(p.x);
-    }
-
     private void normalizar(double[] x) {
-        for (int i = 0; i < x.length; i++) x[i] = Math.max(floor, Math.min(ceiling, x[i]));
+        int min = 0, max = 1;
+        for (int i = 0; i < x.length; i++) x[i] = Math.max(min, Math.min(max, x[i]));
         double suma = Arrays.stream(x).sum();
         if (suma == 0) Arrays.fill(x, 1.0 / x.length);
         else for (int i = 0; i < x.length; i++) x[i] /= suma;
@@ -244,14 +226,14 @@ public class PSO {
 
     private void aplicarMutacion(Particula p, int t) {
         double prob = Math.pow(1.0 - (double)t / maxIteraciones, 5.0 / tasaMutacion);
-        
+        int min = 0, max = 1;
         if (rnd.nextDouble() < prob) {
             int dimsAMutar = 1 + rnd.nextInt(Math.max(1, dimension / 3));
             for(int k=0; k<dimsAMutar; k++) {
                 int dim = rnd.nextInt(dimension);
-                double range = (ceiling - floor) * prob; 
-                double lb = Math.max(floor, p.x[dim] - range);
-                double ub = Math.min(ceiling, p.x[dim] + range);
+                double range = (max - min) * prob; 
+                double lb = Math.max(min, p.x[dim] - range);
+                double ub = Math.min(max, p.x[dim] + range);
                 p.x[dim] = lb + (ub - lb) * rnd.nextDouble();
             }
             normalizar(p.x);

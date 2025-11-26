@@ -5,20 +5,9 @@ import jpype
 from scipy.stats import kurtosis
 
 import utils
-from config import VENTANA_HORAS, PASO_HORAS
 from data_loader import cargar_datos_experimento
 from utils import iniciar_jvm, np_a_java_2darray, np_a_java_array, java_list_of_doublearrays_to_numpy 
-from evaluation import (
-    mostrar_resumen_metrica,
-    graficar_retornos_acumulados,
-    graficar_pesos_promedio,
-    graficar_distribucion_kde,
-    graficar_box_plot,
-    graficar_distribucion_retornos,
-    mostrar_tabla_comparativa,
-    graficar_frente_pareto_global,
-    summary_metrics
-)
+from evaluation import (mostrar_resumen_metrica, graficar_retornos_acumulados, graficar_frente_pareto_global, summary_metrics)
 
 def seleccionar_punto_utopia(frente_obj):
     """
@@ -54,57 +43,6 @@ def seleccionar_punto_utopia(frente_obj):
     
     return idx_seleccionado
 
-def seleccionar_knee_point(frente_obj):
-    """
-    Selecciona el punto de codo (knee point) normalizando primero los objetivos
-    para evitar que la escala de la Curtosis (10-100) opaque al Sharpe (0.001).
-    """
-    objs = np.array(frente_obj)
-    if len(objs) <= 2:
-        return 0
-
-    # 1. Normalizar min-max para poner ambos objetivos en escala [0, 1]
-    min_vals = np.min(objs, axis=0)
-    max_vals = np.max(objs, axis=0)
-    rango = max_vals - min_vals
-    
-    # Evitar división por cero si todos los puntos son iguales en una dimensión
-    rango[rango == 0] = 1.0 
-    
-    objs_norm = (objs - min_vals) / rango
-
-    # 2. Ordenar basado en el primer objetivo (Curtosis)
-    idx_sorted = np.argsort(objs_norm[:, 0])
-    front_norm = objs_norm[idx_sorted]
-    indices_originales = idx_sorted
-
-    # 3. Trazar línea recta desde el primero al último punto
-    p1 = front_norm[0]
-    p2 = front_norm[-1]
-    
-    vec_linea = p2 - p1
-    norm_linea = np.linalg.norm(vec_linea)
-    
-    if norm_linea == 0:
-        return 0
-
-    vec_linea_unitario = vec_linea / norm_linea
-
-    # 4. Calcular distancia perpendicular de cada punto a la línea
-    distancias = []
-    for p in front_norm:
-        vec_puntos = p - p1
-        proyeccion = np.dot(vec_puntos, vec_linea_unitario) * vec_linea_unitario
-        perpendicular = vec_puntos - proyeccion
-        dist = np.linalg.norm(perpendicular)
-        distancias.append(dist)
-
-    # 5. El Knee point es el que tiene mayor distancia a la línea recta
-    knee_local_idx = np.argmax(distancias)
-    
-    return int(indices_originales[knee_local_idx])
-
-
 iniciar_jvm()
 PSO = utils.PSO
 
@@ -119,6 +57,11 @@ pesos_por_estrategia = {"naive": {}, "sharpe": {}, "kurt": {}, "comp": {}}
 frentes_obj_por_ventana = []
 
 print("Iniciando rolling experiment (fracciones)...")
+
+# Ventana de entrenamiento (Lookback Window)
+VENTANA_HORAS = 4 * 7 * 24  # 672 
+# Paso de rebalanceo (Rebalancing Frequency)
+PASO_HORAS = 7 * 24  # 168
 
 for i in trange(0, len(retornos) - VENTANA_HORAS, PASO_HORAS):
     idx_fin_entrenamiento = i + VENTANA_HORAS

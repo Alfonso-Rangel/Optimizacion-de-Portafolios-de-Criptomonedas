@@ -2,7 +2,31 @@
 import pandas as pd
 import numpy as np
 import os
-from config import ARCHIVOS, FECHA_INICIO_SIMULACION, FECHA_FIN_SIMULACION, T_BILL_FILE
+from datetime import datetime
+
+# --- Paths ---
+DATA_DIR = "data"
+T_BILL_FILE = os.path.join(DATA_DIR, "DTB4WK.csv")
+
+# ================ Config ================
+ARCHIVOS = [
+    os.path.join(DATA_DIR, "Gemini_ANKRUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_BATUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_BTCUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_COMPUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_CRVUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_DOGEUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_ETHUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_FETUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_GRTUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_LINKUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_LTCUSD_1h.csv"),
+    os.path.join(DATA_DIR, "Gemini_UMAUSD_1h.csv")
+]
+
+FECHA_INICIO_SIMULACION = "2024-01-01"
+FECHA_FIN_SIMULACION = "2025-11-02" 
+
 
 def leer_precios(archivos):
     """Lee y concatena los archivos CSV de precios en un solo DataFrame."""

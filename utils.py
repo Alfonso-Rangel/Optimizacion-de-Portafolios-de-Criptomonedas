@@ -9,12 +9,10 @@ from scipy.stats import kurtosis
 JDouble = None
 JDoubleArray = None
 JDouble2DArray = None
-PSO = None # Solo necesitamos PSO
-# MOPSO = None  <-- ELIMINADO
+PSO = None
 
 def iniciar_jvm(classpath=["."]):
     """Inicializa la JVM y configura los tipos Java necesarios."""
-    # Se elimina MOPSO de la declaración global
     global JDouble, JDoubleArray, JDouble2DArray, PSO 
     if not jpype.isJVMStarted():
         jpype.startJVM(classpath=classpath)
@@ -22,11 +20,7 @@ def iniciar_jvm(classpath=["."]):
     JDouble = jpype.JDouble
     JDoubleArray = jpype.JArray(JDouble)
     JDouble2DArray = jpype.JArray(JDoubleArray)
-    # Clase PSO unificada
     PSO = jpype.JClass("PSO") 
-    
-    # Se elimina el bloque de código que intentaba cargar MOPSO
-    
     print("JVM inicializada y tipos Java configurados. Clase PSO (unificada) cargada.")
 
 def np_a_java_2darray(numpy_array):
