@@ -1,151 +1,306 @@
 import pandas as pd
 import numpy as np
 from tqdm import trange
-import jpype
+import sys
+import os
+import warnings
 from scipy.stats import kurtosis
+import multiprocessing as mp
+
+# Suprimir warnings no deseados
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import utils
 from data_loader import cargar_datos_experimento
-from utils import iniciar_jvm, np_a_java_2darray, np_a_java_array, java_list_of_doublearrays_to_numpy 
-from evaluation import (mostrar_resumen_metrica, graficar_retornos_acumulados, graficar_frente_pareto_global, summary_metrics)
+from utils import (
+    iniciar_jvm,
+    np_a_java_2darray,
+    np_a_java_array,
+    java_list_of_doublearrays_to_numpy
+)
 
+from evaluation import (
+    mostrar_resumen_metrica,
+    graficar_retornos_acumulados,
+    graficar_frente_pareto_global,
+    summary_metrics,
+    mostrar_tabla_comparativa
+)
+
+# Importar la versión paralela con pool global
+from parallel_executor import (
+    procesar_ventana_parallel_mp,
+    init_global_pool,
+    close_global_pool
+)
+
+# ---------------- Configuración de frecuencias ----------------
+FRECUENCIAS = {
+    'media_semana': 84,
+    'semana': 168,
+    'dos_semanas': 336,
+    'cuatro_semanas': 672,
+    'ocho_semanas': 1344
+}
+
+FRECUENCIA_SELECCIONADA = 'ocho_semanas'
+VENTANA_HORAS = 4 * 7 * 24
+PASO_HORAS = FRECUENCIAS[FRECUENCIA_SELECCIONADA]
+
+# ---------------- Parámetros de experimento ----------------
+SHARPE_RUNS = 10
+KURT_RUNS = 10
+MOPSO_RUNS = 1
+
+# ---------------- Helpers ----------------
 def seleccionar_punto_utopia(frente_obj):
+    if len(frente_obj) == 0:
+        return -1
+    obj = np.array(frente_obj)
+    mins = np.min(obj, axis=0)
+    maxs = np.max(obj, axis=0)
+    rango = maxs - mins
+    rango[rango == 0] = 1.0
+    norm = (obj - mins) / rango
+    dist = np.sum(norm ** 2, axis=1)
+    return np.argmin(dist)
+
+
+def normalizar_pesos(w):
+    w = np.asarray(w, dtype=float)
+    w[w < 0] = 0.0
+    s = w.sum()
+    if s == 0:
+        return np.full_like(w, 1.0 / len(w))
+    return w / s
+
+
+# ---------------- MONO OBJETIVO ----------------
+def ejecutar_mono_multi_runs(retornos_ent, rf_ent, objetivo, n_runs):
     """
-    Selecciona un portafolio de compromiso del Frente de Pareto
-    utilizando la distancia Euclidiana (L2) al Punto de Utopía (Ideal Point).
+    Ejecuta n_runs corridas del PSO mono-objetivo.
+    Selecciona la mejor corrida basada en el fitness calculado en Python.
     """
-    objs = np.array(frente_obj)
-    if len(objs) == 0:
-        return -1 # Retorna un índice inválido si no hay soluciones
+    retornos_java = np_a_java_2darray(retornos_ent.to_numpy())
 
-    # 1. Normalizar min-max
-    # Los objetivos son [Curtosis, -Sharpe]. 
-    # El punto ideal (min Curtosis, max Sharpe) se mapea a (0, 0).
-    min_vals = np.min(objs, axis=0)
-    max_vals = np.max(objs, axis=0)
-    
-    # Evitar división por cero
-    range_vals = max_vals - min_vals
-    range_vals[range_vals == 0] = 1.0 
-    
-    # front_norm[i, m] es la distancia normalizada del portafolio i al ideal (mínimo)
-    front_norm = (objs - min_vals) / range_vals
-    
-    # 2. Calcular la Distancia Euclidiana (L2) al Punto de Utopía (0, 0)
-    # Distancia = sqrt(obj1_norm^2 + obj2_norm^2)
-    # Nota: No necesitamos calcular la raíz cuadrada, solo minimizamos la suma de los cuadrados
-    # para ahorrar cálculo, ya que np.argmin() dará el mismo resultado.
-    
-    distancias_utopia_sq = np.sum(front_norm**2, axis=1)
-    
-    # 3. Seleccionar el punto que minimiza la distancia
-    idx_seleccionado = np.argmin(distancias_utopia_sq)
-    
-    return idx_seleccionado
+    PSO = utils.PSO
+    if PSO is None:
+        raise RuntimeError("PSO no disponible")
 
-iniciar_jvm()
-PSO = utils.PSO
+    mejor_w = None
+    mejor_fitness = None
+    rf_series = pd.Series(rf_ent, index=retornos_ent.index)
 
-if PSO is None:
-    raise RuntimeError("Clase PSO no encontrada")
+    for r in range(n_runs):
+        try:
+            # Usar constructor por defecto (sin semilla)
+            pso = PSO(retornos_java)
 
-retornos, rf_horaria, fechas_indice, n_activos = cargar_datos_experimento()
+            # Ejecutar optimización
+            if objetivo == "sharpe":
+                pso.maximizarSharpe(np_a_java_array(rf_ent))
+            elif objetivo == "kurtosis":
+                pso.minimizarKurtosis()
+            else:
+                raise ValueError(f"Objetivo desconocido: {objetivo}")
 
-retornos_por_estrategia = {"naive": [], "sharpe": [], "kurt": [], "comp": []}
-pesos_por_estrategia = {"naive": {}, "sharpe": {}, "kurt": {}, "comp": {}}
+            # Obtener pesos
+            w = np.array(pso.getMejorPosicion(), float)
+            w = normalizar_pesos(w)
 
-frentes_obj_por_ventana = []
+            # Calcular fitness en Python
+            port = (retornos_ent * w).sum(axis=1)
+            exceso = port - rf_series
 
-print("Iniciando rolling experiment (fracciones)...")
+            if objetivo == "sharpe":
+                mean = exceso.mean()
+                std = exceso.std(ddof=0)
+                fitness = mean / std if std > 0 else -np.inf
+            else:  # curtosis
+                fitness = kurtosis(exceso.values, fisher=True, bias=False)
 
-# Ventana de entrenamiento (Lookback Window)
-VENTANA_HORAS = 4 * 7 * 24  # 672 
-# Paso de rebalanceo (Rebalancing Frequency)
-PASO_HORAS = 7 * 24  # 168
+        except Exception as e:
+            print(f"[Warning] Error en corrida {r+1} ({objetivo}): {e}")
+            continue
 
-for i in trange(0, len(retornos) - VENTANA_HORAS, PASO_HORAS):
-    idx_fin_entrenamiento = i + VENTANA_HORAS
-    retornos_ent = retornos.iloc[i:idx_fin_entrenamiento]
-    rf_ent = rf_horaria[i:idx_fin_entrenamiento]
+        # Seleccionar mejor según criterio
+        if w is None:
+            continue
 
-    idx_fin_inv = min(idx_fin_entrenamiento + PASO_HORAS, len(retornos))
-    retornos_inv = retornos.iloc[idx_fin_entrenamiento:idx_fin_inv]
-    rf_inv = rf_horaria[idx_fin_entrenamiento:idx_fin_inv]
+        if mejor_w is None:
+            mejor_w = w
+            mejor_fitness = fitness
+        else:
+            if objetivo == "sharpe":
+                if fitness > mejor_fitness:
+                    mejor_fitness = fitness
+                    mejor_w = w
+            else:  # curtosis (menor es mejor)
+                if fitness < mejor_fitness:
+                    mejor_fitness = fitness
+                    mejor_w = w
 
-    if retornos_inv.empty:
-        break
+    # Fallback a pesos naive si todas las corridas fallaron
+    if mejor_w is None:
+        n_act = retornos_ent.shape[1]
+        return np.full(n_act, 1.0 / n_act)
 
-    fecha_inv = fechas_indice[idx_fin_entrenamiento]
+    return mejor_w
 
-    w_naive = np.full(n_activos, 1.0 / n_activos)
-    pesos_por_estrategia["naive"][fecha_inv] = w_naive
 
+# ---------------- MULTIOBJETIVO ----------------
+def ejecutar_mopso_single_run(retornos_ent, rf_ent):
+    """
+    Ejecuta una sola corrida de MOPSO.
+    Selecciona punto de utopía del frente Pareto.
+    """
     retornos_java = np_a_java_2darray(retornos_ent.to_numpy())
     rf_java = np_a_java_array(rf_ent)
 
-    # --- Estrategia Max Sharpe (Single Objective) ---
-    pso_sh = PSO(retornos_java)
-    pso_sh.maximizarSharpe(rf_java)
-    w_sh = np.array(pso_sh.getMejorPosicion(), float)
-    w_sh = np.maximum(w_sh, 0)
-    w_sh = w_sh / w_sh.sum() if w_sh.sum() != 0 else np.full(n_activos, 1 / n_activos)
-    pesos_por_estrategia["sharpe"][fecha_inv] = w_sh
-
-    # --- Estrategia Min Curtosis (Single Objective) ---
-    pso_k = PSO(retornos_java)
-    pso_k.minimizarKurtosis()
-    w_k = np.array(pso_k.getMejorPosicion(), float)
-    w_k = np.maximum(w_k, 0)
-    w_k = w_k / w_k.sum() if w_k.sum() != 0 else np.full(n_activos, 1 / n_activos)
-    pesos_por_estrategia["kurt"][fecha_inv] = w_k
-
-    # --- Estrategia Compuesta (Multi Objective MOPSO) ---
-    mopso = PSO(retornos_java)
-    mopso.optimizar(rf_java)
-
-    frente_pos_java = mopso.getFrentePos()
-    frente_obj_java = mopso.getFrenteObj()
-
-    frente_pos = java_list_of_doublearrays_to_numpy(frente_pos_java)
-    frente_obj = java_list_of_doublearrays_to_numpy(frente_obj_java)
-
-    w_comp = np.full(n_activos, 1.0 / n_activos) # Fallback por defecto
-
-    if len(frente_obj) > 0:
-        frentes_obj_por_ventana.append(frente_obj.copy())
-        idx_knee = seleccionar_punto_utopia(frente_obj)
-        w_comp = np.array(frente_pos[idx_knee], float)
+    PSO = utils.PSO
+    if PSO is None:
+        raise RuntimeError("PSO no disponible")
     
-    w_comp = np.maximum(w_comp, 0)
-    w_comp = w_comp / w_comp.sum() if w_comp.sum() != 0 else np.full(n_activos, 1 / n_activos)
+    try:
+        # Usar constructor por defecto (sin semilla)
+        pso = PSO(retornos_java)
 
-    pesos_por_estrategia["comp"][fecha_inv] = w_comp
+        pso.optimizar(rf_java)
 
-    # --- Calcular Retornos del Periodo ---
-    pesos_dict = {"naive": w_naive, "sharpe": w_sh, "kurt": w_k, "comp": w_comp}
-    rf_inv_series = pd.Series(rf_inv, index=retornos_inv.index)
+        # Obtener frente Pareto
+        frente_pos = java_list_of_doublearrays_to_numpy(pso.getFrentePos())
+        frente_obj = java_list_of_doublearrays_to_numpy(pso.getFrenteObj())
 
-    for key, w in pesos_dict.items():
-        r = (retornos_inv * w).sum(axis=1)
-        ex_r = r - rf_inv_series
-        retornos_por_estrategia[key].append(ex_r)
+        if len(frente_obj) == 0:
+            n_act = retornos_ent.shape[1]
+            return np.full(n_act, 1.0 / n_act), []
 
-print("Consolidando resultados...")
+        # Seleccionar punto de utopía
+        idx = seleccionar_punto_utopia(frente_obj)
+        w = np.array(frente_pos[idx], float)
+        w = normalizar_pesos(w)
+        
+        return w, [np.array(frente_obj)]
 
-for key in retornos_por_estrategia:
-    if len(retornos_por_estrategia[key]) == 0:
-        retornos_por_estrategia[key] = pd.Series(dtype=float)
-    else:
-        retornos_por_estrategia[key] = pd.concat(retornos_por_estrategia[key])
+    except Exception as e:
+        print(f"[Warning] Error en MOPSO: {e}")
+        n_act = retornos_ent.shape[1]
+        return np.full(n_act, 1.0 / n_act), []
 
-print("Obteniendo métricas finales...")
-metricas_finales = [
-    summary_metrics(retornos_por_estrategia["naive"], "Naive 1/N"),
-    summary_metrics(retornos_por_estrategia["sharpe"], "Sharpe-PSO"),
-    summary_metrics(retornos_por_estrategia["kurt"], "Kurtosis-PSO"),
-    summary_metrics(retornos_por_estrategia["comp"], "Compuesto (MOPSO)")
-]
 
-mostrar_resumen_metrica(metricas_finales)
-graficar_frente_pareto_global(frentes_obj_por_ventana)
-graficar_retornos_acumulados(retornos_por_estrategia)
+# ---------------- PROCESAMIENTO POR VENTANA ----------------
+def procesar_ventana_multi(retornos_ent, rf_ent, n_activos):
+    """
+    Procesa una ventana usando el pool global.
+    """
+    resultados, frentes_runs = procesar_ventana_parallel_mp(
+        retornos_ent,
+        rf_ent,
+        n_activos
+    )
+    return resultados, frentes_runs
+
+
+# ---------------- MAIN ----------------
+def main():
+    print("=" * 60)
+    print(f"EXPERIMENTO CONFIGURACIÓN")
+    print(f"Frecuencia rebalanceo: {FRECUENCIA_SELECCIONADA}")
+    print(f"Ventana: {VENTANA_HORAS} horas, Paso: {PASO_HORAS} horas")
+    print(f"Corridas: Sharpe={SHARPE_RUNS}, Kurtosis={KURT_RUNS}, MOPSO={MOPSO_RUNS}")
+    print("=" * 60)
+
+    # Iniciar JVM en proceso principal
+    iniciar_jvm()
+    
+    # Inicializar pool global
+    print("\nInicializando pool global de procesos...")
+    init_global_pool(
+        sharpe_runs=SHARPE_RUNS,
+        kurt_runs=KURT_RUNS,
+        mopso_runs=MOPSO_RUNS
+    )
+
+    # Cargar datos
+    retornos, rf_horaria, fechas_indice, n_activos = cargar_datos_experimento()
+    print(f"\nDatos cargados: {retornos.shape[0]} horas, {retornos.shape[1]} activos")
+
+    # Inicializar estructuras de resultados
+    retornos_por_estrategia = {k: [] for k in ["naive", "sharpe", "kurt", "comp"]}
+    pesos_por_estrategia = {k: {} for k in ["naive", "sharpe", "kurt", "comp"]}
+    frentes_pareto = []
+
+    # Procesar ventanas
+    iteraciones = range(0, len(retornos) - VENTANA_HORAS, PASO_HORAS)
+    pbar = trange(len(iteraciones), desc="Optimizando")
+
+    for i, _ in enumerate(pbar):
+        ini = i * PASO_HORAS
+        fin_ent = ini + VENTANA_HORAS
+        fin_inv = min(fin_ent + PASO_HORAS, len(retornos))
+
+        ret_ent = retornos.iloc[ini:fin_ent]
+        rf_ent = rf_horaria[ini:fin_ent]
+        ret_inv = retornos.iloc[fin_ent:fin_inv]
+        rf_inv = rf_horaria[fin_ent:fin_inv]
+
+        if ret_inv.empty:
+            break
+
+        fecha_inv = fechas_indice[fin_ent]
+
+        # Procesar ventana
+        pesos_finales, frentes_runs = procesar_ventana_multi(
+            ret_ent, rf_ent, n_activos
+        )
+
+        # Guardar pesos
+        for strat, w in pesos_finales.items():
+            pesos_por_estrategia[strat][fecha_inv] = w
+
+        # Acumular frentes Pareto
+        for f in frentes_runs:
+            frentes_pareto.append(f)
+
+        # Calcular retornos de inversión
+        rf_inv_series = pd.Series(rf_inv, index=ret_inv.index)
+        for strat, w in pesos_finales.items():
+            port = (ret_inv * w).sum(axis=1)
+            port_exceso = port - rf_inv_series
+            retornos_por_estrategia[strat].append(port_exceso)
+
+        pbar.set_postfix({'Fecha': fecha_inv.strftime('%Y-%m-%d')})
+
+    # Cerrar pool global
+    print("\nCerrando pool global...")
+    close_global_pool()
+
+    # Consolidar resultados
+    for strat in retornos_por_estrategia:
+        lst = retornos_por_estrategia[strat]
+        retornos_por_estrategia[strat] = pd.concat(lst) if lst else pd.Series(dtype=float)
+
+    # Calcular métricas
+    metricas = [
+        summary_metrics(retornos_por_estrategia["naive"], "Naive 1/N"),
+        summary_metrics(retornos_por_estrategia["sharpe"], "Sharpe-PSO"),
+        summary_metrics(retornos_por_estrategia["kurt"], "Kurtosis-PSO"),
+        summary_metrics(retornos_por_estrategia["comp"], "MOPSO")
+    ]
+
+    mostrar_resumen_metrica(metricas)
+    mostrar_tabla_comparativa(metricas)
+    graficar_frente_pareto_global(frentes_pareto)
+    graficar_retornos_acumulados(
+        retornos_por_estrategia,
+        titulo=f"Desempeño - {FRECUENCIA_SELECCIONADA}"
+    )
+
+
+if __name__ == "__main__":
+    if sys.platform.startswith('win'):
+        mp.freeze_support()
+    main()

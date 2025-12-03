@@ -1,53 +1,118 @@
-# utils.py
-
 import jpype
+import jpype.imports
 import numpy as np
-import pandas as pd
-from scipy.stats import kurtosis
+import threading
+import os 
 
-# Variables globales para los tipos Java
+# Objetos Java inicializados cuando se arranca la JVM
 JDouble = None
 JDoubleArray = None
 JDouble2DArray = None
 PSO = None
 
-def iniciar_jvm(classpath=["."]):
-    """Inicializa la JVM y configura los tipos Java necesarios."""
-    global JDouble, JDoubleArray, JDouble2DArray, PSO 
-    if not jpype.isJVMStarted():
-        jpype.startJVM(classpath=classpath)
+# Lock para inicialización thread-safe
+_jvm_lock = threading.Lock()
+_jvm_started = False
+_jvm_started_per_process = False  # Para multiprocessing
+
+def iniciar_jvm(classpath=None, force=False):
+    """
+    Inicia la JVM una única vez por proceso.
+    El classpath debe apuntar a la carpeta donde se encuentra PSO.class
+    o al jar que contiene la clase.
     
-    JDouble = jpype.JDouble
-    JDoubleArray = jpype.JArray(JDouble)
-    JDouble2DArray = jpype.JArray(JDoubleArray)
-    PSO = jpype.JClass("PSO") 
-    print("JVM inicializada y tipos Java configurados. Clase PSO (unificada) cargada.")
-
-def np_a_java_2darray(numpy_array):
-    """Convierte un array 2D de NumPy a un JDouble2DArray de Java."""
-    if JDouble2DArray is None:
-        raise RuntimeError("JVM no inicializada. Llama a iniciar_jvm() primero.")
+    Args:
+        classpath: lista de paths o string
+        force: forzar reinicio (útil para testing)
+    """
+    global JDouble, JDoubleArray, JDouble2DArray, PSO, _jvm_started, _jvm_started_per_process
     
-    return JDouble2DArray([JDoubleArray(row.tolist()) for row in numpy_array])
+    # Para multiprocessing, cada proceso debe iniciar su propia JVM
+    if not force and _jvm_started_per_process:
+        return
+    
+    with _jvm_lock:
+        if jpype.isJVMStarted() and not force:
+            # Ya iniciada, sólo cargar clases
+            JDouble = jpype.JDouble
+            JDoubleArray = jpype.JArray(JDouble)
+            JDouble2DArray = jpype.JArray(JDoubleArray)
+            PSO = jpype.JClass("PSO")
+            _jvm_started_per_process = True
+            return
 
+        if classpath is None:
+            classpath = ["."]
+        elif isinstance(classpath, str):
+            classpath = [classpath]
 
-def np_a_java_array(numpy_array):
-    """Convierte un array 1D de NumPy a un JDoubleArray de Java."""
-    if JDoubleArray is None:
-        raise RuntimeError("JVM no inicializada. Llama a iniciar_jvm() primero.")
+        jvm_args = [
+            jpype.getDefaultJVMPath(),
+            "-ea",  # Enable assertions
+            "--enable-native-access=ALL-UNNAMED",
+            "-Djava.class.path=" + ":".join(classpath),
+            "-Xms256m",  # Memoria inicial
+            "-Xmx1024m", # Memoria máxima
+             "-XX:+IgnoreUnrecognizedVMOptions",
+        ]
         
-    return JDoubleArray(numpy_array.tolist())
+        try:
+            jpype.startJVM(*jvm_args)
+        except Exception as e:
+            print(f"Error iniciando JVM: {e}")
+            # Intentar sin argumentos de memoria
+            jpype.startJVM(jpype.getDefaultJVMPath(), "-Djava.class.path=" + ":".join(classpath))
+
+        JDouble = jpype.JDouble
+        JDoubleArray = jpype.JArray(JDouble)
+        JDouble2DArray = jpype.JArray(JDoubleArray)
+        PSO = jpype.JClass("PSO")
+        
+        _jvm_started = True
+        _jvm_started_per_process = True
+        print(f"JVM inicializada en proceso {os.getpid()}. Clase PSO cargada correctamente.")
+
+def np_a_java_array(arr):
+    """
+    Convierte np.array 1D → JDoubleArray
+    Requiere haber llamado iniciar_jvm() antes.
+    """
+    if JDoubleArray is None:
+        iniciar_jvm()
+
+    if not isinstance(arr, np.ndarray):
+        arr = np.asarray(arr, dtype=float)
+
+    return JDoubleArray(arr.astype(float).tolist())
+
+
+def np_a_java_2darray(arr2d):
+    """
+    Convierte np.array 2D → JDouble2DArray.
+    """
+    if JDouble2DArray is None:
+        iniciar_jvm()
+
+    if not isinstance(arr2d, np.ndarray):
+        arr2d = np.asarray(arr2d, dtype=float)
+
+    filas = []
+    for fila in arr2d.astype(float):
+        filas.append(JDoubleArray(fila.tolist()))
+
+    return JDouble2DArray(filas)
 
 
 def java_list_of_doublearrays_to_numpy(java_list):
     """
-    Convierte una lista Java (ArrayList) de arrays double[] a una lista de numpy arrays.
-    Ejemplo de uso: frente de Pareto devuelto por PSO_MOPSO.getFrentePos()
+    Convierte una lista Java (ArrayList<double[]>) → lista de np.array.
     """
     if java_list is None:
         return []
-    py_list = []
-    for jarr in java_list:
-        # jarr es un array Java; convertir a lista de floats
-        py_list.append(np.array([float(x) for x in jarr], dtype=float))
-    return py_list
+
+    resultados = []
+    for elem in java_list:
+        fila = np.array([float(v) for v in elem], dtype=float)
+        resultados.append(fila)
+
+    return resultados

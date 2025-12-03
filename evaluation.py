@@ -1,3 +1,5 @@
+#evaluation.py
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,10 +30,8 @@ def mostrar_resumen_metrica(metricas_list):
 #  GRÁFICAS DE DESEMPEÑO
 # ============================================================
 
-def graficar_retornos_acumulados(retornos_dict):
+def graficar_retornos_acumulados(retornos_dict, titulo=None):
     plt.figure(figsize=(12, 6))
-
-    # Colores y estilos profesionales
     styles = {
         "naive":  {"c": "gray", "ls": "--", "label": "Naive 1/N"},
         "sharpe": {"c": "blue", "ls": "-.", "label": "Max Sharpe (PSO)"},
@@ -46,7 +46,12 @@ def graficar_retornos_acumulados(retornos_dict):
                      color=style["c"], linestyle=style["ls"], label=style["label"], linewidth=1.5)
 
     plt.legend(fontsize=10)
-    plt.title("Crecimiento del Portafolio (Retornos Acumulados)", fontsize=14)
+    
+    if titulo:
+        plt.title(titulo, fontsize=14)
+    else:
+        plt.title("Crecimiento del Portafolio (Retornos Acumulados)", fontsize=14)
+        
     plt.ylabel("Retorno Acumulado (Fracción)", fontsize=12)
     plt.xlabel("Fecha", fontsize=12)
     plt.grid(True, alpha=0.3)
@@ -61,9 +66,6 @@ def summary_metrics(series_excess, name):
     
     total_return = (1 + series).prod() - 1
     total_return_pct = total_return * 100
-    
-    # Calcular Curtosis de Fisher (normal=0) para que sea consistente con el Java
-    # fisher=True es el default en scipy, pero lo explicitamos.
     kurt = kurtosis(series.values, fisher=True, bias=False)
     total_hours = len(series)
     
@@ -128,7 +130,6 @@ def graficar_frente_pareto_global(frentes):
     minus_sharpe_vals = todos[:, 1]
     sharpe_real = -minus_sharpe_vals  # Invertir para ver Sharpe positivo
 
-    # Mostramos todo sin filtrar outliers
     x_clean = curtosis_vals
     y_clean = sharpe_real
 
