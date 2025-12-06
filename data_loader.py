@@ -1,96 +1,120 @@
 import pandas as pd
 import numpy as np
 import os
-import warnings
+from datetime import datetime
 
-warnings.filterwarnings('ignore', message='The default fill_method')
-
-# --- Paths ---
 DATA_DIR = "data"
-T_BILL_FILE = os.path.join(DATA_DIR, "DTB4WK.csv")
+T_BILL_FILE = os.path.join(DATA_DIR, "_DTB4WK.csv")
 
-# ================ Config ================
+# ARCHIVOS será generado por curated_data.py; por defecto esperar archivo con top assets
 ARCHIVOS = [
-    os.path.join(DATA_DIR, "Gemini_ANKRUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_BATUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_BTCUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_COMPUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_CRVUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_DOGEUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_ETHUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_FETUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_GRTUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_LINKUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_LTCUSD_1h.csv"),
-    os.path.join(DATA_DIR, "Gemini_UMAUSD_1h.csv")
+    os.path.join(DATA_DIR, "BTCUSD_1h.csv"),
+    os.path.join(DATA_DIR, "ETHUSD_1h.csv"),
+    os.path.join(DATA_DIR, "USDCUSD_1h.csv"),
+    os.path.join(DATA_DIR, "DOGEUSD_1h.csv"),
+    os.path.join(DATA_DIR, "SOLUSD_1h.csv"),
+    os.path.join(DATA_DIR, "LTCUSD_1h.csv"),
+    os.path.join(DATA_DIR, "LINKUSD_1h.csv"),
+    os.path.join(DATA_DIR, "AMPUSD_1h.csv"),
+    os.path.join(DATA_DIR, "BCHUSD_1h.csv"),
+    os.path.join(DATA_DIR, "FILUSD_1h.csv"),
 ]
 
-#FECHA_INICIO_SIMULACION = "2022-02-23"
-FECHA_INICIO_SIMULACION = "2025-01-01"
-FECHA_FIN_SIMULACION = "2025-11-02"
+FECHA_INICIO_SIMULACION = "2022-02-23"
+FECHA_FIN_SIMULACION = "2025-12-01"
 
 
-def leer_precios(archivos):
-    """Lee y concatena los archivos CSV de precios en un solo DataFrame."""
+def leer_precios_con_limpieza(archivos):
     dfs = []
     for archivo in archivos:
-        df = pd.read_csv(archivo, skiprows=1)
-        df["date"] = pd.to_datetime(df["date"])
+        try:
+            df = pd.read_csv(archivo, skiprows=1)
+        except Exception as e:
+            print(f"Error leyendo {archivo}: {e}")
+            continue
+
+        required = ["date", "open", "high", "low", "close"]
+        if not all(col in df.columns for col in required):
+            print(f"Skipping {archivo} missing cols")
+            continue
+
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.set_index("date").sort_index()
-        simbolo = os.path.basename(archivo).split("_")[1].replace("USD", "")
-        dfs.append(df[["close"]].rename(columns={"close": simbolo}))
-    precios = pd.concat(dfs, axis=1)
+        # select and coerce
+        for c in ["open", "high", "low", "close"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        # pick volume USD
+        vol_cols = [c for c in df.columns if "Volume" in c and "USD" in c]
+        if vol_cols:
+            df["vol_usd"] = pd.to_numeric(df[vol_cols[0]], errors="coerce")
+        else:
+            df["vol_usd"] = np.nan
+
+        # Replace non-positive prices with NaN
+        for c in ["open", "high", "low", "close"]:
+            df.loc[df[c] <= 0, c] = np.nan
+
+        # simple ffill small gaps <= 4h
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].ffill(limit=4)
+
+        # drop remaining NaNs
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        if df.empty:
+            continue
+
+        fname = os.path.basename(archivo)
+        symbol = fname.split("_")[0].replace("USD", "")
+        dfs.append(df[["close"]].rename(columns={"close": symbol}))
+
+    if not dfs:
+        raise RuntimeError("No data after cleaning")
+
+    # join on inner (common timestamps)
+    precios = pd.concat(dfs, axis=1, join="inner")
     return precios
 
 
 def cargar_datos_experimento():
-    """
-    Carga precios, calcula retornos simples horarios y procesa la tasa libre de riesgo.
-    Retorna:
-        retornos (retornos simples, frac.),
-        tasa libre de riesgo horaria (fracción),
-        fechas de índice,
-        número de activos.
-    """
-    print("Leyendo precios...")
-    precios = leer_precios(ARCHIVOS)
+    print("Cargando y limpiando precios...")
+    precios = leer_precios_con_limpieza(ARCHIVOS)
 
+    # calcular retornos simples
     retornos = precios.pct_change().dropna()
-
-    # Filtrar rango
     retornos = retornos.loc[FECHA_INICIO_SIMULACION:FECHA_FIN_SIMULACION]
+    if retornos.empty:
+        raise RuntimeError("No returns in requested date range")
+
     fechas_indice = retornos.index
     n_activos = retornos.shape[1]
 
-    print("Leyendo T-Bill (4-week)...")
+    # leer T-Bill
+    if not os.path.exists(T_BILL_FILE):
+        raise FileNotFoundError(f"T-Bill file not found: {T_BILL_FILE}")
 
-    # Leer T-Bill
-    rf = pd.read_csv(
-        T_BILL_FILE,
-        sep=None,
-        engine="python",
-        na_values=[".", ""]
-    )
+    try:
+        rf = pd.read_csv(T_BILL_FILE, sep=None, engine="python", header=0)
+    except Exception:
+        rf = pd.read_csv(T_BILL_FILE, sep="\t", engine="python", header=0)
 
-    if rf.shape[1] == 1 and '\t' in rf.columns[0]:
-        rf = rf[rf.columns[0]].str.split('\t', expand=True)
-    rf.columns = [c.strip() for c in rf.columns[:2]]
+    # normalize rf columns
+    rf_cols = rf.columns.tolist()
     rf = rf.iloc[:, :2]
     rf.columns = ["DATE", "VALUE"]
-
-    rf["DATE"] = pd.to_datetime(rf["DATE"])
+    rf["DATE"] = pd.to_datetime(rf["DATE"], errors="coerce")
     rf = rf.set_index("DATE").sort_index()
+    rf["VALUE"] = pd.to_numeric(rf["VALUE"], errors="coerce").ffill().bfill()
 
-    # Convertir VALUE a float y forward-fill para huecos
-    rf["VALUE"] = pd.to_numeric(rf["VALUE"], errors="coerce").ffill()
-
-    # Convertir tasa anual (%) a tasa horaria compuesta (fracción)
-    # 8760 = 365 * 24
+    # convert annual percent to hourly simple rate approximation
     rf["rf_hourly"] = (1.0 + rf["VALUE"] / 100.0) ** (1.0 / 8760.0) - 1.0
+    rf_aligned = rf.reindex(fechas_indice, method="ffill")
+    rf_aligned["rf_hourly"] = rf_aligned["rf_hourly"].fillna(0.0)
 
-    # Alinear la tasa libre de riesgo con los retornos horarios (ffill)
-    rf = rf.reindex(retornos.index, method="ffill")
+    rf_horaria = rf_aligned["rf_hourly"].to_numpy()
 
-    rf_horaria = rf["rf_hourly"].to_numpy()
-
+    print(f"Loaded returns: {retornos.shape[0]} periods, {n_activos} assets")
     return retornos, rf_horaria, fechas_indice, n_activos
+
+
+if __name__ == "__main__":
+    r, rf, fechas, n = cargar_datos_experimento()
+    print("OK")
