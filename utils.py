@@ -6,7 +6,6 @@ import os
 import warnings
 warnings.filterwarnings('ignore', message='The default fill_method')
 
-
 JDouble = None
 JDoubleArray = None
 JDouble2DArray = None
@@ -14,7 +13,6 @@ PSO = None
 
 _jvm_lock = threading.Lock()
 _jvm_started = False
-
 
 def iniciar_jvm(classpath=None, force=False):
     global JDouble, JDoubleArray, JDouble2DArray, PSO, _jvm_started

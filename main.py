@@ -1,12 +1,10 @@
-import pandas as pd
-import numpy as np
-from tqdm import trange
-import sys
-import os
-import warnings
-from scipy.stats import kurtosis
 import multiprocessing as mp
-import time
+import os
+import sys
+import warnings
+import numpy as np
+import pandas as pd
+from tqdm import trange
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -23,12 +21,13 @@ from evaluation import (
     graficar_retornos_acumulados,
     graficar_frente_pareto_global,
     summary_metrics,
-    mostrar_tabla_comparativa
+    mostrar_tabla_comparativa,
+    graficar_barras_pesos
 )
 
 # Config
 FRECUENCIAS = {'media_semana': 84, 'semana':168, 'dos_semanas':336, 'cuatro_semanas':672, 'ocho_semanas':1344}
-FRECUENCIA_SELECCIONADA = 'cuatro_semanas'
+FRECUENCIA_SELECCIONADA = 'ocho_semanas'
 VENTANA_HORAS = 4 * 7 * 24
 PASO_HORAS = FRECUENCIAS[FRECUENCIA_SELECCIONADA]
 
@@ -114,33 +113,11 @@ def ejecutar_mopso_single_run(ret_ent, rf_ent):
         w = np.array(front_pos[idx], dtype=float)
         w = normalizar_pesos(w)
         return w, [np.array(front_obj)]
-    except Exception as e:
+    except Exception:
         n_act = ret_ent.shape[1]
         return np.full(n_act, 1.0 / n_act), []
 
-
-def bootstrap_p_value(diff_series, n_boot=2000):
-    """
-    Bootstrap one-sided test: H0 mean <= 0, H1 mean > 0.
-    Returns p-value.
-    """
-    diffs = diff_series.dropna().values
-    if len(diffs) == 0:
-        return 1.0
-    obs = diffs.mean()
-    rng = np.random.default_rng(seed=12345)
-    boot_means = []
-    n = len(diffs)
-    for _ in range(n_boot):
-        sample = rng.choice(diffs, size=n, replace=True)
-        boot_means.append(sample.mean())
-    boot_means = np.array(boot_means)
-    # p-value = proportion of boot_means >= obs (since H1: mean > 0)
-    p = (boot_means >= obs).mean()
-    return float(p)
-
-
-def procesar_ventana(ret_ent, rf_ent, n_activos, prev_weights=None):
+def procesar_ventana(ret_ent, rf_ent, prev_weights=None):
     """
     Procesa una ventana: filtra activos con muchos gaps/zeros estáticos,
     ejecuta Sharpe (mejor corrida), Kurtosis (mejor corrida) en paralelo,
@@ -209,9 +186,6 @@ def main():
     iteraciones = range(0, len(retornos) - VENTANA_HORAS, PASO_HORAS)
     pbar = trange(len(iteraciones), desc=f"Optimizando ({FRECUENCIA_SELECCIONADA})")
 
-    # For reporting bootstrap significance
-    ventana_stats = []
-
     for i, _ in enumerate(pbar):
         ini = i * PASO_HORAS
         fin_ent = ini + VENTANA_HORAS
@@ -228,7 +202,7 @@ def main():
 
         fecha_inv = fechas_indice[fin_ent]
 
-        pesos_avg, frentes_runs = procesar_ventana(ret_ent, rf_ent, n_activos, prev_weights)
+        pesos_avg, frentes_runs = procesar_ventana(ret_ent, rf_ent, prev_weights)
 
         for strat, w in pesos_avg.items():
             pesos_por_estrategia[strat][fecha_inv] = w
@@ -238,25 +212,12 @@ def main():
 
         rf_inv_series = pd.Series(rf_inv, index=ret_inv.index)
 
-        # compute excess returns per strategy and bootstrap p-values vs naive
-        naive_series = (ret_inv * pesos_avg["naive"]).sum(axis=1) - rf_inv_series
-
         for strat, w in pesos_avg.items():
             port = (ret_inv * w).sum(axis=1)
             port_exceso = port - rf_inv_series
             retornos_por_estrategia[strat].append(port_exceso)
 
-        # bootstrap: compare sharpe and comp vs naive for this window
-        stats = {"fecha": fecha_inv}
-        for strat in ["sharpe", "kurt", "comp"]:
-            series_s = (ret_inv * pesos_avg[strat]).sum(axis=1) - rf_inv_series
-            diff = series_s - naive_series
-            p = bootstrap_p_value(diff, n_boot=1000)
-            stats[f"p_{strat}_vs_naive"] = p
-        ventana_stats.append(stats)
-
         prev_weights = pesos_avg
-
         pbar.set_postfix({'Ventana': f"{ini}-{fin_ent}", 'Fecha': fecha_inv.strftime('%Y-%m-%d')})
 
     # consolidate
@@ -273,20 +234,35 @@ def main():
 
     mostrar_resumen_metrica(metricas)
     mostrar_tabla_comparativa(metricas)
-    graficar_frente_pareto_global(frentes_pareto)
+    #graficar_frente_pareto_global(frentes_pareto)
     graficar_retornos_acumulados(retornos_por_estrategia, titulo=f"Desempeño - {FRECUENCIA_SELECCIONADA}")
 
-    # Report bootstrap summary
-    df_stats = pd.DataFrame(ventana_stats)
-    print("\nBootstrap p-value summary (strategy vs naive) per window:")
-    print(df_stats.describe().T)
+    nombres_activos = retornos.columns.tolist()
 
-    # percentage of windows where p < 0.05
-    for strat in ["sharpe", "kurt", "comp"]:
-        col = f"p_{strat}_vs_naive"
-        if col in df_stats:
-            perc = (df_stats[col] < 0.05).mean() * 100.0
-            print(f"Windows where {strat} significantly > naive (p<0.05): {perc:.2f}%")
+    frecuencia_texto = {
+        'media_semana': '0.5 semanas',
+        'semana': '1 semana',
+        'dos_semanas': '2 semanas',
+        'cuatro_semanas': '4 semanas',
+        'ocho_semanas': '8 semanas'
+    }.get(FRECUENCIA_SELECCIONADA, FRECUENCIA_SELECCIONADA)
+    
+    titulo_general = f"Evolución de Portafolios de Criptomonedas (Rebalanceo: {frecuencia_texto})"
+    
+    graficar_barras_pesos(
+        pesos_por_estrategia=pesos_por_estrategia,
+        nombres_activos=nombres_activos,
+        titulo_general=titulo_general,
+        max_barras=40 
+    )
+    
+    # También mostrar información sobre el período total
+    print(f"\nPERÍODO TOTAL DE ANÁLISIS:")
+    print(f"  Fecha inicio: {fechas_indice[0].strftime('%Y-%m-%d')}")
+    print(f"  Fecha fin: {fechas_indice[-1].strftime('%Y-%m-%d')}")
+    print(f"  Total períodos (horas): {len(fechas_indice)}")
+    print(f"  Activos analizados: {nombres_activos}")
+
 
 if __name__ == "__main__":
     if sys.platform.startswith('win'):

@@ -1,7 +1,6 @@
-import pandas as pd
-import numpy as np
 import os
-from datetime import datetime
+import numpy as np
+import pandas as pd
 
 DATA_DIR = "data"
 T_BILL_FILE = os.path.join(DATA_DIR, "_DTB4WK.csv")
@@ -22,7 +21,6 @@ ARCHIVOS = [
 
 FECHA_INICIO_SIMULACION = "2022-02-23"
 FECHA_FIN_SIMULACION = "2025-12-01"
-
 
 def leer_precios_con_limpieza(archivos):
     dfs = []
@@ -97,7 +95,6 @@ def cargar_datos_experimento():
         rf = pd.read_csv(T_BILL_FILE, sep="\t", engine="python", header=0)
 
     # normalize rf columns
-    rf_cols = rf.columns.tolist()
     rf = rf.iloc[:, :2]
     rf.columns = ["DATE", "VALUE"]
     rf["DATE"] = pd.to_datetime(rf["DATE"], errors="coerce")
@@ -111,9 +108,8 @@ def cargar_datos_experimento():
 
     rf_horaria = rf_aligned["rf_hourly"].to_numpy()
 
-    print(f"Loaded returns: {retornos.shape[0]} periods, {n_activos} assets")
+    print(f"Datos cargados: {retornos.shape[0]} periodos, {n_activos} activos")
     return retornos, rf_horaria, fechas_indice, n_activos
-
 
 if __name__ == "__main__":
     r, rf, fechas, n = cargar_datos_experimento()

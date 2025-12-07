@@ -1,8 +1,8 @@
 import multiprocessing as mp
+import traceback
 import numpy as np
 import pandas as pd
-import traceback
-import os
+
 
 # worker initializer to start JVM per process
 def _init_worker():
