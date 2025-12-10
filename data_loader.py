@@ -5,18 +5,17 @@ import pandas as pd
 DATA_DIR = "data"
 T_BILL_FILE = os.path.join(DATA_DIR, "_DTB4WK.csv")
 
-# ARCHIVOS será generado por curated_data.py; por defecto esperar archivo con top assets
 ARCHIVOS = [
-    os.path.join(DATA_DIR, "BTCUSD_1h.csv"),
-    os.path.join(DATA_DIR, "ETHUSD_1h.csv"),
-    os.path.join(DATA_DIR, "USDCUSD_1h.csv"),
-    os.path.join(DATA_DIR, "DOGEUSD_1h.csv"),
-    os.path.join(DATA_DIR, "SOLUSD_1h.csv"),
-    os.path.join(DATA_DIR, "LTCUSD_1h.csv"),
-    os.path.join(DATA_DIR, "LINKUSD_1h.csv"),
-    os.path.join(DATA_DIR, "AMPUSD_1h.csv"),
-    os.path.join(DATA_DIR, "BCHUSD_1h.csv"),
-    os.path.join(DATA_DIR, "FILUSD_1h.csv"),
+    os.path.join(DATA_DIR, "BTC.csv"),
+    os.path.join(DATA_DIR, "ETH.csv"),
+    os.path.join(DATA_DIR, "USDC.csv"),
+    os.path.join(DATA_DIR, "DOGE.csv"),
+    os.path.join(DATA_DIR, "SOL.csv"),
+    os.path.join(DATA_DIR, "LTC.csv"),
+    os.path.join(DATA_DIR, "LINK.csv"),
+    os.path.join(DATA_DIR, "AMP.csv"),
+    os.path.join(DATA_DIR, "BCH.csv"),
+    os.path.join(DATA_DIR, "FIL.csv"),
 ]
 
 FECHA_INICIO_SIMULACION = "2022-02-23"
@@ -38,10 +37,10 @@ def leer_precios_con_limpieza(archivos):
 
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.set_index("date").sort_index()
-        # select and coerce
+        
         for c in ["open", "high", "low", "close"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-        # pick volume USD
+        
         vol_cols = [c for c in df.columns if "Volume" in c and "USD" in c]
         if vol_cols:
             df["vol_usd"] = pd.to_numeric(df[vol_cols[0]], errors="coerce")
@@ -61,13 +60,12 @@ def leer_precios_con_limpieza(archivos):
             continue
 
         fname = os.path.basename(archivo)
-        symbol = fname.split("_")[0].replace("USD", "")
+        symbol = fname.replace(".csv", "")
         dfs.append(df[["close"]].rename(columns={"close": symbol}))
 
     if not dfs:
         raise RuntimeError("No data after cleaning")
 
-    # join on inner (common timestamps)
     precios = pd.concat(dfs, axis=1, join="inner")
     return precios
 
@@ -76,7 +74,6 @@ def cargar_datos_experimento():
     print("Cargando y limpiando precios...")
     precios = leer_precios_con_limpieza(ARCHIVOS)
 
-    # calcular retornos simples
     retornos = precios.pct_change().dropna()
     retornos = retornos.loc[FECHA_INICIO_SIMULACION:FECHA_FIN_SIMULACION]
     if retornos.empty:
@@ -101,7 +98,7 @@ def cargar_datos_experimento():
     rf = rf.set_index("DATE").sort_index()
     rf["VALUE"] = pd.to_numeric(rf["VALUE"], errors="coerce").ffill().bfill()
 
-    # convert annual percent to hourly simple rate approximation
+    # convertir retornos anuales a retornos por hora
     rf["rf_hourly"] = (1.0 + rf["VALUE"] / 100.0) ** (1.0 / 8760.0) - 1.0
     rf_aligned = rf.reindex(fechas_indice, method="ffill")
     rf_aligned["rf_hourly"] = rf_aligned["rf_hourly"].fillna(0.0)

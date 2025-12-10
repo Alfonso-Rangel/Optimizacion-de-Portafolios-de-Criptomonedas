@@ -31,10 +31,10 @@ def mostrar_resumen_metrica(metricas_list):
 def graficar_retornos_acumulados(retornos_dict, titulo=None):
     plt.figure(figsize=(12, 6))
     styles = {
-        "naive":  {"c": "gray", "ls": "--", "label": "Naive 1/N"},
+        "naive":  {"c": "gray", "ls": "--", "label": "Naive (1/N)"},
         "sharpe": {"c": "blue", "ls": "-.", "label": "Max Sharpe (PSO)"},
-        "kurt":   {"c": "green", "ls": ":",  "label": "Min Curtosis (PSO)"},
-        "comp":   {"c": "red",   "ls": "-",  "label": "Compuesto (MOPSO)"}
+        "curt":   {"c": "green", "ls": ":",  "label": "Min Curtosis (PSO)"},
+        "comp":   {"c": "red",   "ls": "-",  "label": "Multiobjetivo (MOPSO)"}
     }
 
     for key, style in styles.items():
@@ -239,14 +239,7 @@ def graficar_frente_pareto_global(frentes):
     plt.tight_layout()
     plt.show()
 
-def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=None, max_barras=40):
-    """
-    Genera gráficos de barras apiladas al 100% con estilo IDENTICO al gráfico de distribuciones Linux.
-    - Muestra porcentajes en TODAS las barras.
-    - Corrige límites del eje X para evitar espacio en blanco excesivo.
-    - Etiquetas a la derecha con espaciado uniforme y color del activo.
-    """
-
+def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=None, max_barras=100):
     colores_base = [
         "#1793d1", "#747c92", "#1a1a2e", "#6fbf73", "#FF69B4",
         "#ff4b3e", "#5d2f8e", "#7c3f58", "#ffe548", "#a80030"
@@ -333,8 +326,7 @@ def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=
             for j, rect in enumerate(bars):
                 height = rect.get_height()
                 
-                # ⬇️ MODIFICACIÓN 1: Eliminar la condición de frecuencia (j % mostrar_freq == 0)
-                # Ahora mostramos el porcentaje en CADA barra, siempre que la altura sea suficiente.
+                # Mostrar el porcentaje en CADA barra, siempre que la altura sea suficiente.
                 if height > 4.0: 
                     # Pequeño ajuste para activos con 10% y evitar saturación en nombres largos
                     if height < 10.5 and n_activos > 10:
@@ -369,7 +361,7 @@ def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=
         
         # Títulos
         titulo_estr = {
-            'naive': 'Naive 1/N', 'sharpe': 'Max Sharpe', 'kurt': 'Min Kurtosis', 'comp': 'Compuesto'
+            'naive': 'Naive 1/N', 'sharpe': 'Max Sharpe', 'curt': 'Min Curtosis', 'comp': 'Multiobjetivo'
         }.get(estrategia, estrategia.capitalize())
         
         if titulo_general:
@@ -380,27 +372,39 @@ def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=
         ax.set_ylim(0, 100)
         ax.set_yticks(np.arange(0, 101, 20))
         ax.yaxis.set_minor_locator(MultipleLocator(10))
-        
-        # ⬇️ MODIFICACIÓN 2: Asegurar que la etiqueta Y no se corte
         ax.set_ylabel("Participación (%)", labelpad=10, fontsize=12)
         
-        # Eje X - Fechas
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        # --- MODIFICACIÓN: ETIQUETAS DEL EJE X CON FECHAS DE REBALANCEO ---
+        # Establecer las marcas del eje X en las fechas de las barras
+        ax.set_xticks(fechas_mpl)
         
-        # ⬇️ MODIFICACIÓN 3: Ajustar límites X para eliminar el espacio en blanco al inicio/fin del área de datos
-        # Iniciamos justo en el centro de la primera barra y terminamos en el centro de la última.
+        # Formatear las etiquetas del eje X según el número de ventanas
+        if n_ventanas <= 50:
+            # Hasta 50 ventanas: mostrar día-mes
+            etiquetas_fechas = [fecha.strftime('%d-%m-%y') for fecha in fechas_seleccionadas]
+            ax.set_xticklabels(etiquetas_fechas, rotation=45, ha='right', fontsize=9)
+        else:
+            # Muchas ventanas: mostrar solo cada 2ª, 3ª o 4ª fecha
+            intervalo = max(1, n_ventanas // 20) 
+            etiquetas_fechas = []
+            for i, fecha in enumerate(fechas_seleccionadas):
+                if i % intervalo == 0:
+                    # Para intervalos largos, mostrar día-mes-año completo
+                    if intervalo >= 4:
+                        etiquetas_fechas.append(fecha.strftime('%d-%m-%y'))
+                    else:
+                        etiquetas_fechas.append(fecha.strftime('%d-%m'))
+                else:
+                    etiquetas_fechas.append('')
+            
+            ax.set_xticklabels(etiquetas_fechas, rotation=45, ha='right', fontsize=9)
+            
         
-        # 1. Ajuste Izquierdo: Solo un pequeño margen antes de la primera barra
+        # Ajustar límites X
         fecha_inicio_mpl = fechas_mpl[0] - (width * 0.7) 
-        
-        # 2. Ajuste Derecho: Espacio para las etiquetas de la derecha
         espacio_derecha_dias = width * 8 
         fecha_fin_mpl = fechas_mpl[-1] + espacio_derecha_dias
-        
         ax.set_xlim(fecha_inicio_mpl, fecha_fin_mpl)
-        
-        plt.xticks(rotation=45, ha='right')
         
         # Estética limpia
         ax.spines['top'].set_visible(False)
@@ -408,5 +412,9 @@ def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=
         ax.spines['left'].set_visible(True)
         ax.spines['bottom'].set_visible(True)
         
-        plt.tight_layout() # Asegura que todos los elementos (títulos, etiquetas Y, etc.) encajen bien
+        # Añadir líneas verticales tenues en cada rebalanceo para mejor orientación
+        for fecha_mpl in fechas_mpl:
+            ax.axvline(x=fecha_mpl, color='gray', alpha=0.15, linewidth=0.5)
+        
+        plt.tight_layout()
         plt.show()

@@ -6,8 +6,8 @@ import java.util.Random;
 
 public class PSO {
 
-    private final int maxIter = 250;
-    private final int nPart = 200;
+    private final int maxIter = 150;
+    private final int nPart = 100;
     private final int dim;
 
     private final int tamArchivo = 100;

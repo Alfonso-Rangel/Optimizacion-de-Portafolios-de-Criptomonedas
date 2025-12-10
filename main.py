@@ -33,7 +33,7 @@ PASO_HORAS = FRECUENCIAS[FRECUENCIA_SELECCIONADA]
 
 SHARPE_RUNS = 6
 KURT_RUNS = 6
-MOPSO_RUNS = 1  # MOPSO sequential single run per window
+MOPSO_RUNS = 1 
 
 SMOOTH_ALPHA = 0.7
 
@@ -136,7 +136,7 @@ def procesar_ventana(ret_ent, rf_ent, prev_weights=None):
     w_sharpe, sharpe_runs = ejecutar_mono_seleccion_mejor(ret_filtered, rf_ent, "sharpe", SHARPE_RUNS)
 
     # Kurtosis best
-    w_kurt, kurt_runs = ejecutar_mono_seleccion_mejor(ret_filtered, rf_ent, "kurtosis", KURT_RUNS)
+    w_kurt, kurt_runs = ejecutar_mono_seleccion_mejor(ret_filtered, rf_ent, "curtosis", KURT_RUNS)
 
     # MOPSO single run (on filtered set), returns full length weights for original asset set
     w_comp_sub, frentes = ejecutar_mopso_single_run(ret_filtered, rf_ent)
@@ -160,7 +160,7 @@ def procesar_ventana(ret_ent, rf_ent, prev_weights=None):
     resultados = {
         "naive": w_naive,
         "sharpe": w_sharpe_full,
-        "kurt": w_kurt_full,
+        "curt": w_kurt_full,
         "comp": w_comp_full
     }
 
@@ -177,11 +177,11 @@ def main():
     iniciar_jvm()
     retornos, rf_horaria, fechas_indice, n_activos = cargar_datos_experimento()
 
-    retornos_por_estrategia = {k: [] for k in ["naive", "sharpe", "kurt", "comp"]}
-    pesos_por_estrategia = {k: {} for k in ["naive", "sharpe", "kurt", "comp"]}
+    retornos_por_estrategia = {k: [] for k in ["naive", "sharpe", "curt", "comp"]}
+    pesos_por_estrategia = {k: {} for k in ["naive", "sharpe", "curt", "comp"]}
     frentes_pareto = []
 
-    prev_weights = {k: None for k in ["naive", "sharpe", "kurt", "comp"]}
+    prev_weights = {k: None for k in ["naive", "sharpe", "curt", "comp"]}
 
     iteraciones = range(0, len(retornos) - VENTANA_HORAS, PASO_HORAS)
     pbar = trange(len(iteraciones), desc=f"Optimizando ({FRECUENCIA_SELECCIONADA})")
@@ -228,13 +228,13 @@ def main():
     metricas = [
         summary_metrics(retornos_por_estrategia["naive"], "Naive 1/N"),
         summary_metrics(retornos_por_estrategia["sharpe"], "Sharpe-PSO"),
-        summary_metrics(retornos_por_estrategia["kurt"], "Kurtosis-PSO"),
+        summary_metrics(retornos_por_estrategia["curt"], "Curtosis-PSO"),
         summary_metrics(retornos_por_estrategia["comp"], "MOPSO")
     ]
 
     mostrar_resumen_metrica(metricas)
     mostrar_tabla_comparativa(metricas)
-    #graficar_frente_pareto_global(frentes_pareto)
+    graficar_frente_pareto_global(frentes_pareto)
     graficar_retornos_acumulados(retornos_por_estrategia, titulo=f"Desempeño - {FRECUENCIA_SELECCIONADA}")
 
     nombres_activos = retornos.columns.tolist()
@@ -247,22 +247,13 @@ def main():
         'ocho_semanas': '8 semanas'
     }.get(FRECUENCIA_SELECCIONADA, FRECUENCIA_SELECCIONADA)
     
-    titulo_general = f"Evolución de Portafolios de Criptomonedas (Rebalanceo: {frecuencia_texto})"
+    titulo_general = f"Evolución de la distribución del portafolio (Rebalanceo: {frecuencia_texto})"
     
     graficar_barras_pesos(
         pesos_por_estrategia=pesos_por_estrategia,
         nombres_activos=nombres_activos,
-        titulo_general=titulo_general,
-        max_barras=40 
+        titulo_general=titulo_general
     )
-    
-    # También mostrar información sobre el período total
-    print(f"\nPERÍODO TOTAL DE ANÁLISIS:")
-    print(f"  Fecha inicio: {fechas_indice[0].strftime('%Y-%m-%d')}")
-    print(f"  Fecha fin: {fechas_indice[-1].strftime('%Y-%m-%d')}")
-    print(f"  Total períodos (horas): {len(fechas_indice)}")
-    print(f"  Activos analizados: {nombres_activos}")
-
 
 if __name__ == "__main__":
     if sys.platform.startswith('win'):
