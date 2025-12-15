@@ -17,24 +17,18 @@ public class PSO {
     private final Random rnd;
 
     private Particula[] pobl;
-    private Particula gbestSO;
-
     private final ArrayList<Solucion> archivo = new ArrayList<>();
 
     public static class Particula {
         double[] x;
         double[] v;
-
         double[] pbestPos;
-        double pbestValSO;
-
         double[] pbestObjMO;
 
         public Particula(int d) {
             x = new double[d];
             v = new double[d];
             pbestPos = new double[d];
-            pbestValSO = Double.NaN;
             pbestObjMO = new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
         }
     }
@@ -51,61 +45,11 @@ public class PSO {
         }
     }
 
-    // Constructor por defecto (usa timestamp como semilla)
+    // Constructor por defecto
     public PSO(double[][] ret) {
-        this(ret, System.currentTimeMillis());
-    }
-
-    // Constructor con semilla para reproducibilidad
-    public PSO(double[][] ret, long seed) {
         this.retornos = ret;
         this.dim = ret[0].length;
-        this.rnd = new Random(seed);
-    }
-
-    // ---------------- Modo Objectivo ----------------
-    public void maximizarSharpe(double[] rf) {
-        ejecutarSO(rf, true);
-    }
-
-    public void minimizarKurtosis() {
-        ejecutarSO(null, false);
-    }
-
-    private void ejecutarSO(double[] rf, boolean esSharpe) {
-        initPobl();
-
-        gbestSO = new Particula(dim);
-        gbestSO.pbestValSO = esSharpe ? -Double.MAX_VALUE : Double.MAX_VALUE;
-
-        for (Particula p : pobl) {
-            double val = esSharpe ? sharpe(p.x, rf) : kurtosis(p.x);
-            p.pbestValSO = val;
-            p.pbestPos = Arrays.copyOf(p.x, dim);
-            actualizarGBestSO(p, val, esSharpe);
-        }
-
-        for (int t = 0; t < maxIter; t++) {
-            for (Particula p : pobl) {
-                mover(p, gbestSO.pbestPos, 0.4, 1.5, 1.5);
-                normalizar(p.x);
-                double val = esSharpe ? sharpe(p.x, rf) : kurtosis(p.x);
-                boolean mejorP = esSharpe ? val > p.pbestValSO : val < p.pbestValSO;
-                if (mejorP) {
-                    p.pbestValSO = val;
-                    p.pbestPos = Arrays.copyOf(p.x, dim);
-                }
-                actualizarGBestSO(p, val, esSharpe);
-            }
-        }
-    }
-
-    private void actualizarGBestSO(Particula p, double val, boolean esSharpe) {
-        boolean mejorG = esSharpe ? val > gbestSO.pbestValSO : val < gbestSO.pbestValSO;
-        if (mejorG) {
-            gbestSO.pbestValSO = val;
-            gbestSO.pbestPos = Arrays.copyOf(p.x, dim);
-        }
+        this.rnd = new Random(System.currentTimeMillis());
     }
 
     // ---------------- Multi Objectivo (MOPSO) ----------------
@@ -286,10 +230,6 @@ public class PSO {
         if (better && !worse) return -1;
         if (worse && !better) return 1;
         return 0;
-    }
-
-    public double[] getMejorPosicion() {
-        return Arrays.copyOf(gbestSO.pbestPos, dim);
     }
 
     public ArrayList<double[]> getFrentePos() {

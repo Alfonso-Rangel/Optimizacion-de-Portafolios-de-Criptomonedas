@@ -1,3 +1,5 @@
+# main.py optimizado
+
 import multiprocessing as mp
 import os
 import sys
@@ -13,7 +15,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils import iniciar_jvm, np_a_java_array, np_a_java_2darray, java_list_of_doublearrays_to_numpy
 from data_loader import cargar_datos_experimento
-from parallel_executor import run_mono_parallel
 import utils as U
 
 from evaluation import (
@@ -31,13 +32,14 @@ FRECUENCIA_SELECCIONADA = 'ocho_semanas'
 VENTANA_HORAS = 4 * 7 * 24
 PASO_HORAS = FRECUENCIAS[FRECUENCIA_SELECCIONADA]
 
-SHARPE_RUNS = 6
-KURT_RUNS = 6
-MOPSO_RUNS = 1 
-
+# Solo necesitamos MOPSO_RUNS ahora
+MOPSO_RUNS = 1
 SMOOTH_ALPHA = 0.7
 
 def seleccionar_punto_utopia(frente_obj):
+    """
+    Selecciona el punto de utopía (más cercano al punto ideal) usando normalización min-max.
+    """
     if len(frente_obj) == 0:
         return -1
     obj = np.array(frente_obj)
@@ -49,6 +51,29 @@ def seleccionar_punto_utopia(frente_obj):
     dist = np.sum(norm**2, axis=1)
     return np.argmin(dist)
 
+def seleccionar_mejor_sharpe(frente_obj):
+    """
+    Selecciona el portafolio con mejor Sharpe Ratio del frente de Pareto.
+    frente_obj: [[curtosis, -sharpe], ...]
+    """
+    if len(frente_obj) == 0:
+        return -1
+    
+    obj = np.array(frente_obj)
+    # La segunda columna es -sharpe, convertimos a sharpe positivo
+    sharpe_values = -obj[:, 1]
+    return np.argmax(sharpe_values)
+
+def seleccionar_mejor_kurtosis(frente_obj):
+    """
+    Selecciona el portafolio con mejor (menor) Kurtosis del frente de Pareto.
+    frente_obj: [[curtosis, -sharpe], ...]
+    """
+    if len(frente_obj) == 0:
+        return -1
+    
+    obj = np.array(frente_obj)
+    return np.argmin(obj[:, 0])
 
 def normalizar_pesos(w):
     w = np.asarray(w, dtype=float)
@@ -58,102 +83,76 @@ def normalizar_pesos(w):
         return np.full_like(w, 1.0 / len(w))
     return w / s
 
-
-def ejecutar_mono_seleccion_mejor(ret_ent, rf_ent, objetivo, n_runs):
+def ejecutar_mopso_y_seleccionar_puntos(ret_ent, rf_ent):
     """
-    Ejecuta n_runs en paralelo usando run_mono_parallel, luego selecciona la mejor corrida según fitness.
-    Para Sharpe: fitness = Sharpe (mayor mejor). Se aplica regla: si Sharpe <= 0 => naive.
-    Para Kurtosis: fitness = curtosis (menor mejor).
-    """
-    results = run_mono_parallel(ret_ent, rf_ent, objetivo, n_runs)
-    # filter successful
-    valids = [r for r in results if r.get("w") is not None]
-    if not valids:
-        n_act = ret_ent.shape[1]
-        return np.full(n_act, 1.0 / n_act), results
-
-    if objetivo == "sharpe":
-        best = max(valids, key=lambda x: (x.get("fitness") if x.get("fitness") is not None else -1e9))
-        w = np.array(best["w"], dtype=float)
-        w = normalizar_pesos(w)
-        # compute final sharpe to apply rule
-        port = (ret_ent * w).sum(axis=1)
-        exces = port - pd.Series(rf_ent, index=ret_ent.index)
-        mean = exces.mean()
-        std = exces.std(ddof=0)
-        sharpe_final = mean / std if std > 0 else -np.inf
-        if sharpe_final <= 0:
-            n_act = ret_ent.shape[1]
-            return np.full(n_act, 1.0 / n_act), results
-        return w, results
-    else:  # kurtosis
-        best = min(valids, key=lambda x: (x.get("fitness") if x.get("fitness") is not None else 1e9))
-        w = np.array(best["w"], dtype=float)
-        w = normalizar_pesos(w)
-        return w, results
-
-
-def ejecutar_mopso_single_run(ret_ent, rf_ent):
-    """
-    Ejecuta 1 corrida MOPSO secuencial y selecciona punto de utopía.
+    Ejecuta 1 corrida MOPSO secuencial y selecciona 3 puntos del frente:
+    1. Punto de utopía (compromiso óptimo)
+    2. Mejor Sharpe (máximo ratio de Sharpe)
+    3. Mejor Kurtosis (mínima curtosis)
+    
+    Devuelve: (w_utopia, w_sharpe, w_kurt, frentes)
     """
     iniciar_jvm()
     PSO = U.PSO
     retornos_java = np_a_java_2darray(ret_ent.to_numpy())
     rf_java = np_a_java_array(rf_ent)
+    
     try:
         pso = PSO(retornos_java)
         pso.optimizar(rf_java)
         front_pos = java_list_of_doublearrays_to_numpy(pso.getFrentePos())
         front_obj = java_list_of_doublearrays_to_numpy(pso.getFrenteObj())
+        
         if len(front_obj) == 0:
             n_act = ret_ent.shape[1]
-            return np.full(n_act, 1.0 / n_act), []
-        idx = seleccionar_punto_utopia(front_obj)
-        w = np.array(front_pos[idx], dtype=float)
-        w = normalizar_pesos(w)
-        return w, [np.array(front_obj)]
-    except Exception:
+            naive_w = np.full(n_act, 1.0 / n_act)
+            return naive_w, naive_w, naive_w, []
+        
+        # Seleccionar los 3 puntos clave
+        idx_utopia = seleccionar_punto_utopia(front_obj)
+        idx_sharpe = seleccionar_mejor_sharpe(front_obj)
+        idx_kurt = seleccionar_mejor_kurtosis(front_obj)
+        
+        # Obtener y normalizar pesos
+        w_utopia = normalizar_pesos(np.array(front_pos[idx_utopia], dtype=float))
+        w_sharpe = normalizar_pesos(np.array(front_pos[idx_sharpe], dtype=float))
+        w_kurt = normalizar_pesos(np.array(front_pos[idx_kurt], dtype=float))
+        
+        return w_utopia, w_sharpe, w_kurt, [np.array(front_obj)]
+        
+    except Exception as e:
+        print(f"Error en MOPSO: {e}")
         n_act = ret_ent.shape[1]
-        return np.full(n_act, 1.0 / n_act), []
+        naive_w = np.full(n_act, 1.0 / n_act)
+        return naive_w, naive_w, naive_w, []
 
-def procesar_ventana(ret_ent, rf_ent, prev_weights=None):
+def procesar_ventana(ret_ent, rf_ent, n_activos, prev_weights=None):
     """
-    Procesa una ventana: filtra activos con muchos gaps/zeros estáticos,
-    ejecuta Sharpe (mejor corrida), Kurtosis (mejor corrida) en paralelo,
-    ejecuta MOPSO secuencialmente (1 corrida utopía).
+    Procesa una ventana: ejecuta MOPSO una vez y obtiene los 3 puntos clave.
     Devuelve pesos dict y frentes.
     """
     # Filtrado simple por activos con demasiados NaN en la ventana
     valid_cols = [c for c in ret_ent.columns if ret_ent[c].isna().sum() == 0]
     if len(valid_cols) < max(2, int(0.5 * len(ret_ent.columns))):
-        # fallback: keep original
         valid_cols = list(ret_ent.columns)
 
     ret_filtered = ret_ent[valid_cols]
 
-    # Sharpe best
-    w_sharpe, sharpe_runs = ejecutar_mono_seleccion_mejor(ret_filtered, rf_ent, "sharpe", SHARPE_RUNS)
+    # Ejecutar MOPSO una vez y obtener los 3 puntos
+    w_comp_sub, w_sharpe_sub, w_kurt_sub, frentes = ejecutar_mopso_y_seleccionar_puntos(ret_filtered, rf_ent)
 
-    # Kurtosis best
-    w_kurt, kurt_runs = ejecutar_mono_seleccion_mejor(ret_filtered, rf_ent, "curtosis", KURT_RUNS)
-
-    # MOPSO single run (on filtered set), returns full length weights for original asset set
-    w_comp_sub, frentes = ejecutar_mopso_single_run(ret_filtered, rf_ent)
-
-    # expand weights back to original asset order (missing assets -> 0)
+    # Expandir pesos al conjunto original de activos
     def expand(w_sub, sub_cols, all_cols):
         w_full = np.zeros(len(all_cols), dtype=float)
         for i, c in enumerate(all_cols):
             if c in sub_cols:
                 idx = sub_cols.index(c)
                 w_full[i] = w_sub[idx]
-        # renormalize
         return normalizar_pesos(w_full)
 
     all_cols = list(ret_ent.columns)
-    w_sharpe_full = expand(w_sharpe, list(ret_filtered.columns), all_cols)
-    w_kurt_full = expand(w_kurt, list(ret_filtered.columns), all_cols)
+    w_sharpe_full = expand(w_sharpe_sub, list(ret_filtered.columns), all_cols)
+    w_kurt_full = expand(w_kurt_sub, list(ret_filtered.columns), all_cols)
     w_comp_full = expand(w_comp_sub, list(ret_filtered.columns), all_cols)
     w_naive = np.full(len(all_cols), 1.0 / len(all_cols))
 
@@ -164,7 +163,7 @@ def procesar_ventana(ret_ent, rf_ent, prev_weights=None):
         "comp": w_comp_full
     }
 
-    # smoothing
+    # Aplicar suavizado si hay pesos previos
     if prev_weights is not None:
         for k in resultados.keys():
             if k in prev_weights and prev_weights[k] is not None:
@@ -202,7 +201,7 @@ def main():
 
         fecha_inv = fechas_indice[fin_ent]
 
-        pesos_avg, frentes_runs = procesar_ventana(ret_ent, rf_ent, prev_weights)
+        pesos_avg, frentes_runs = procesar_ventana(ret_ent, rf_ent, n_activos, prev_weights)
 
         for strat, w in pesos_avg.items():
             pesos_por_estrategia[strat][fecha_inv] = w
@@ -220,20 +219,21 @@ def main():
         prev_weights = pesos_avg
         pbar.set_postfix({'Ventana': f"{ini}-{fin_ent}", 'Fecha': fecha_inv.strftime('%Y-%m-%d')})
 
-    # consolidate
+    # Consolidar resultados
     for strat in retornos_por_estrategia:
         lst = retornos_por_estrategia[strat]
         retornos_por_estrategia[strat] = pd.concat(lst) if lst else pd.Series(dtype=float)
 
     metricas = [
         summary_metrics(retornos_por_estrategia["naive"], "Naive 1/N"),
-        summary_metrics(retornos_por_estrategia["sharpe"], "Sharpe-PSO"),
-        summary_metrics(retornos_por_estrategia["curt"], "Curtosis-PSO"),
-        summary_metrics(retornos_por_estrategia["comp"], "MOPSO")
+        summary_metrics(retornos_por_estrategia["sharpe"], "Max Sharpe (del frente)"),
+        summary_metrics(retornos_por_estrategia["curt"], "Min Curtosis (del frente)"),
+        summary_metrics(retornos_por_estrategia["comp"], "Punto de Utopía")
     ]
 
     mostrar_resumen_metrica(metricas)
     mostrar_tabla_comparativa(metricas)
+    
     graficar_frente_pareto_global(frentes_pareto)
     graficar_retornos_acumulados(retornos_por_estrategia, titulo=f"Desempeño - {FRECUENCIA_SELECCIONADA}")
 
@@ -254,6 +254,7 @@ def main():
         nombres_activos=nombres_activos,
         titulo_general=titulo_general
     )
+    
 
 if __name__ == "__main__":
     if sys.platform.startswith('win'):
