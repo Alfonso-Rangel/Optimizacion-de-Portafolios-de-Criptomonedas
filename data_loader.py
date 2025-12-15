@@ -107,7 +107,3 @@ def cargar_datos_experimento():
 
     print(f"Datos cargados: {retornos.shape[0]} periodos, {n_activos} activos")
     return retornos, rf_horaria, fechas_indice, n_activos
-
-if __name__ == "__main__":
-    r, rf, fechas, n = cargar_datos_experimento()
-    print("OK")
