@@ -1,6 +1,4 @@
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.Random;
 
@@ -9,59 +7,60 @@ public class PSO {
     private final int maxIter = 150;
     private final int nPart = 100;
     private final int dim;
-
     private final int tamArchivo = 100;
     private final double tasaMut = 0.6;
 
     private final double[][] retornos;
+    private final int T;
     private final Random rnd;
 
     private Particula[] pobl;
-    private final ArrayList<Solucion> archivo = new ArrayList<>();
+    private final ArrayList<Solucion> archivo = new ArrayList<>(tamArchivo + 10);
 
-    public static class Particula {
-        double[] x;
-        double[] v;
-        double[] pbestPos;
-        double[] pbestObjMO;
+    // ---------------- Estructuras ----------------
 
-        public Particula(int d) {
+    static class Particula {
+        double[] x, v, pbestPos;
+        double[] pbestObj;
+
+        Particula(int d) {
             x = new double[d];
             v = new double[d];
             pbestPos = new double[d];
-            pbestObjMO = new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
+            pbestObj = new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
         }
     }
 
-    public static class Solucion {
+    static class Solucion {
         double[] pos;
         double[] obj;
         double crowd;
 
-        public Solucion(double[] p, double[] o) {
-            pos = p;
-            obj = o;
-            crowd = 0.0;
+        Solucion(int d) {
+            pos = new double[d];
+            obj = new double[2];
         }
     }
 
-    // Constructor por defecto
+    // ---------------- Constructor ----------------
+
     public PSO(double[][] ret) {
         this.retornos = ret;
+        this.T = ret.length;
         this.dim = ret[0].length;
-        this.rnd = new Random(System.currentTimeMillis());
+        this.rnd = new Random(123456);
     }
 
-    // ---------------- Multi Objectivo (MOPSO) ----------------
+    // ---------------- Optimización ----------------
+
     public void optimizar(double[] rf) {
         initPobl();
         archivo.clear();
 
         for (Particula p : pobl) {
-            double[] obj = evalMO(p.x, rf);
-            p.pbestObjMO = Arrays.copyOf(obj, obj.length);
-            p.pbestPos = Arrays.copyOf(p.x, dim);
-            insertarArchivo(p.x, obj);
+            evalMO(p.x, p.pbestObj, rf);
+            System.arraycopy(p.x, 0, p.pbestPos, 0, dim);
+            insertarArchivo(p.x, p.pbestObj);
         }
 
         for (int it = 0; it < maxIter; it++) {
@@ -69,133 +68,157 @@ public class PSO {
 
             for (Particula p : pobl) {
                 Solucion leader = selectLeader();
-                double[] guia = (leader != null) ? leader.pos : p.pbestPos;
+                double[] guia = leader != null ? leader.pos : p.pbestPos;
 
                 mover(p, guia, 0.4, 1.8, 1.8);
                 mutar(p, it);
                 normalizar(p.x);
 
-                double[] objN = evalMO(p.x, rf);
-                actualizarPBestMO(p, objN);
-                insertarArchivo(p.x, objN);
+                double[] obj = new double[2];
+                evalMO(p.x, obj, rf);
+                actualizarPBest(p, obj);
+                insertarArchivo(p.x, obj);
             }
         }
     }
 
-    // ---------------- Helpers del PSO ----------------
+    // ---------------- PSO ----------------
+
     private void initPobl() {
         pobl = new Particula[nPart];
         for (int i = 0; i < nPart; i++) {
-            pobl[i] = new Particula(dim);
+            Particula p = new Particula(dim);
             for (int j = 0; j < dim; j++) {
-                pobl[i].x[j] = rnd.nextDouble();
-                pobl[i].v[j] = 0.0;
+                p.x[j] = rnd.nextDouble();
+                p.v[j] = 0.0;
             }
-            normalizar(pobl[i].x);
+            normalizar(p.x);
+            pobl[i] = p;
         }
     }
 
-    private void mover(Particula p, double[] lider, double w, double c1, double c2) {
+    private void mover(Particula p, double[] g, double w, double c1, double c2) {
         for (int j = 0; j < dim; j++) {
             double r1 = rnd.nextDouble();
             double r2 = rnd.nextDouble();
             p.v[j] = w * p.v[j]
                     + c1 * r1 * (p.pbestPos[j] - p.x[j])
-                    + c2 * r2 * (lider[j] - p.x[j]);
+                    + c2 * r2 * (g[j] - p.x[j]);
             p.x[j] += p.v[j];
         }
     }
 
     private void normalizar(double[] x) {
-        for (int i = 0; i < x.length; i++) {
+        double sum = 0.0;
+        for (int i = 0; i < dim; i++) {
             if (x[i] < 0.0) x[i] = 0.0;
-            if (x[i] > 1.0) x[i] = 1.0;
+            else if (x[i] > 1.0) x[i] = 1.0;
+            sum += x[i];
         }
-        double sum = Arrays.stream(x).sum();
         if (sum == 0.0) {
-            Arrays.fill(x, 1.0 / x.length);
+            double v = 1.0 / dim;
+            for (int i = 0; i < dim; i++) x[i] = v;
         } else {
-            for (int i = 0; i < x.length; i++) x[i] /= sum;
+            double inv = 1.0 / sum;
+            for (int i = 0; i < dim; i++) x[i] *= inv;
         }
     }
 
+    // ---------------- Mutación ----------------
+
     private void mutar(Particula p, int t) {
-        double prob = Math.pow(1.0 - ((double) t / maxIter), 5.0 / tasaMut);
+        double prob = Math.pow(1.0 - (double) t / maxIter, 5.0 / tasaMut);
         if (rnd.nextDouble() < prob) {
             int d = 1 + rnd.nextInt(Math.max(1, dim / 3));
             for (int k = 0; k < d; k++) {
                 int idx = rnd.nextInt(dim);
                 double range = prob;
-                double lb = Math.max(0.0, p.x[idx] - range);
-                double ub = Math.min(1.0, p.x[idx] + range);
+                double lb = p.x[idx] - range;
+                double ub = p.x[idx] + range;
+                if (lb < 0.0) lb = 0.0;
+                if (ub > 1.0) ub = 1.0;
                 p.x[idx] = lb + (ub - lb) * rnd.nextDouble();
             }
             normalizar(p.x);
         }
     }
 
-    private double[] evalMO(double[] w, double[] rf) {
-        double k = kurtosis(w);
-        double s = sharpe(w, rf);
-        if (Double.isNaN(k) || Double.isInfinite(k)) k = 1e6;
-        if (Double.isNaN(s) || Double.isInfinite(s)) s = -1e6;
-        return new double[]{k, -s};
+    // ---------------- Evaluación ----------------
+
+    private void evalMO(double[] w, double[] out, double[] rf) {
+        double mean = 0.0;
+        double m2 = 0.0;
+        double m4 = 0.0;
+        double sharpeNum = 0.0;
+        double sharpeDen = 0.0;
+
+        for (int t = 0; t < T; t++) {
+            double v = 0.0;
+            for (int i = 0; i < dim; i++) {
+                v += w[i] * retornos[t][i];
+            }
+            mean += v;
+            double exc = v - rf[t];
+            sharpeNum += exc;
+            sharpeDen += exc * exc;
+        }
+
+        mean /= T;
+
+        for (int t = 0; t < T; t++) {
+            double v = 0.0;
+            for (int i = 0; i < dim; i++) {
+                v += w[i] * retornos[t][i];
+            }
+            double d = v - mean;
+            double d2 = d * d;
+            m2 += d2;
+            m4 += d2 * d2;
+        }
+
+        m2 /= T;
+        m4 /= T;
+
+        double kurt = (m2 < 1e-12) ? 0.0 : (m4 / (m2 * m2) - 3.0);
+        double var = sharpeDen / T - Math.pow(sharpeNum / T, 2);
+        double sharpe = (var < 1e-12) ? 0.0 : (sharpeNum / T) / Math.sqrt(var);
+
+        out[0] = kurt;
+        out[1] = -sharpe;
     }
 
-    private void actualizarPBestMO(Particula p, double[] obj) {
-        int d = domina(obj, p.pbestObjMO);
-        if (d == -1) {
-            p.pbestObjMO = Arrays.copyOf(obj, obj.length);
-            p.pbestPos = Arrays.copyOf(p.x, dim);
-        } else if (d == 0 && rnd.nextBoolean()) {
-            p.pbestObjMO = Arrays.copyOf(obj, obj.length);
-            p.pbestPos = Arrays.copyOf(p.x, dim);
-        }
-    }
+    // ---------------- Archivo ----------------
 
     private void insertarArchivo(double[] pos, double[] obj) {
-        if (Double.isNaN(obj[0]) || Double.isNaN(obj[1])) return;
-
-        boolean dominate = false;
-        ArrayList<Solucion> eliminar = new ArrayList<>();
-
-        for (Solucion s : archivo) {
-            int comp = domina(s.obj, obj);
-            if (comp == -1) {
-                dominate = true;
-                break;
-            } else if (comp == 1) {
-                eliminar.add(s);
-            } else if (Arrays.equals(s.obj, obj)) {
-                dominate = true;
-                break;
-            }
+        for (int i = archivo.size() - 1; i >= 0; i--) {
+            int d = domina(archivo.get(i).obj, obj);
+            if (d == -1) return;
+            if (d == 1) archivo.remove(i);
         }
 
-        if (dominate) return;
-        archivo.removeAll(eliminar);
-        archivo.add(new Solucion(pos.clone(), obj.clone()));
+        Solucion s = new Solucion(dim);
+        System.arraycopy(pos, 0, s.pos, 0, dim);
+        s.obj[0] = obj[0];
+        s.obj[1] = obj[1];
+        archivo.add(s);
 
         if (archivo.size() > tamArchivo) {
-            controlarArchivo();
+            calcCrowd();
+            archivo.sort(Comparator.comparingDouble(a -> a.crowd));
+            archivo.remove(0);
         }
-    }
-
-    private void controlarArchivo() {
-        calcCrowd();
-        Collections.sort(archivo, Comparator.comparingDouble(s -> s.crowd));
-        archivo.remove(0);
     }
 
     private void calcCrowd() {
         int n = archivo.size();
-        if (n == 0) return;
+        if (n < 3) return;
+
         for (Solucion s : archivo) s.crowd = 0.0;
 
-        int m = 2;
-        for (int j = 0; j < m; j++) {
-            final int idx = j;
+        for (int m = 0; m < 2; m++) {
+            final int idx = m;
             archivo.sort(Comparator.comparingDouble(s -> s.obj[idx]));
+
             archivo.get(0).crowd = Double.POSITIVE_INFINITY;
             archivo.get(n - 1).crowd = Double.POSITIVE_INFINITY;
 
@@ -205,85 +228,58 @@ public class PSO {
             if (range < 1e-12) range = 1.0;
 
             for (int i = 1; i < n - 1; i++) {
-                double d = (archivo.get(i + 1).obj[idx] - archivo.get(i - 1).obj[idx]) / range;
-                if (archivo.get(i).crowd != Double.POSITIVE_INFINITY) {
-                    archivo.get(i).crowd += d;
-                }
+                archivo.get(i).crowd +=
+                        (archivo.get(i + 1).obj[idx] - archivo.get(i - 1).obj[idx]) / range;
             }
         }
     }
 
     private Solucion selectLeader() {
-        if (archivo.isEmpty()) return null;
-        int i1 = rnd.nextInt(archivo.size());
-        int i2 = rnd.nextInt(archivo.size());
-        return archivo.get(i1).crowd > archivo.get(i2).crowd ? archivo.get(i1) : archivo.get(i2);
+        int a = rnd.nextInt(archivo.size());
+        int b = rnd.nextInt(archivo.size());
+        return archivo.get(a).crowd > archivo.get(b).crowd ? archivo.get(a) : archivo.get(b);
     }
 
-    public static int domina(double[] A, double[] B) {
-        boolean better = false;
-        boolean worse = false;
+    // ---------------- Dominancia ----------------
+
+    static int domina(double[] A, double[] B) {
+        boolean better = false, worse = false;
         for (int i = 0; i < A.length; i++) {
             if (A[i] < B[i]) better = true;
-            if (A[i] > B[i]) worse = true;
+            else if (A[i] > B[i]) worse = true;
         }
         if (better && !worse) return -1;
         if (worse && !better) return 1;
         return 0;
     }
 
-    public ArrayList<double[]> getFrentePos() {
-        ArrayList<double[]> l = new ArrayList<>();
-        for (Solucion s : archivo) l.add(s.pos.clone());
-        return l;
+    private void actualizarPBest(Particula p, double[] obj) {
+        int d = domina(obj, p.pbestObj);
+        if (d == -1 || (d == 0 && rnd.nextBoolean())) {
+            System.arraycopy(obj, 0, p.pbestObj, 0, 2);
+            System.arraycopy(p.x, 0, p.pbestPos, 0, dim);
+        }
     }
+
+    public ArrayList<double[]> getFrentePos() {
+    ArrayList<double[]> l = new ArrayList<>(archivo.size());
+    for (Solucion s : archivo) {
+        double[] p = new double[dim];
+        System.arraycopy(s.pos, 0, p, 0, dim);
+        l.add(p);
+    }
+    return l;
+}
 
     public ArrayList<double[]> getFrenteObj() {
-        ArrayList<double[]> l = new ArrayList<>();
-        for (Solucion s : archivo) l.add(s.obj.clone());
+        ArrayList<double[]> l = new ArrayList<>(archivo.size());
+        for (Solucion s : archivo) {
+            double[] o = new double[2];
+            o[0] = s.obj[0];
+            o[1] = s.obj[1];
+            l.add(o);
+        }
         return l;
     }
 
-    private double kurtosis(double[] w) {
-        int T = retornos.length;
-        double[] port = new double[T];
-
-        for (int t = 0; t < T; t++) {
-            double v = 0.0;
-            for (int i = 0; i < dim; i++) v += w[i] * retornos[t][i];
-            port[t] = v;
-        }
-
-        double mean = Arrays.stream(port).average().orElse(0.0);
-        double m2 = 0, m4 = 0;
-        for (double v : port) {
-            double d = v - mean;
-            double d2 = d * d;
-            m2 += d2;
-            m4 += d2 * d2;
-        }
-        m2 /= T;
-        m4 /= T;
-
-        if (m2 < 1e-12) return 0.0;
-        return (m4 / (m2 * m2)) - 3.0;
-    }
-
-    private double sharpe(double[] w, double[] rf) {
-        int T = retornos.length;
-        double s1 = 0, s2 = 0;
-
-        for (int t = 0; t < T; t++) {
-            double v = 0.0;
-            for (int i = 0; i < dim; i++) v += w[i] * retornos[t][i];
-            double exc = v - rf[t];
-            s1 += exc;
-            s2 += exc * exc;
-        }
-
-        double mean = s1 / T;
-        double var = (s2 / T) - mean * mean;
-        if (var < 1e-12) return 0.0;
-        return mean / Math.sqrt(var);
-    }
 }
