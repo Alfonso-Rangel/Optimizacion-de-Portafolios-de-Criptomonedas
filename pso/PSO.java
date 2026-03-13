@@ -12,7 +12,7 @@ public class PSO {
 
     private final double[][] retornos;
     private final int T;
-    private final Random rnd;
+    private final Random rnd = new Random();;
 
     private Particula[] pobl;
     private final ArrayList<Solucion> archivo = new ArrayList<>(tamArchivo + 10);
@@ -48,7 +48,7 @@ public class PSO {
         this.retornos = ret;
         this.T = ret.length;
         this.dim = ret[0].length;
-        this.rnd = new Random(123456);
+        //this.rnd = new Random(123456);
     }
 
     // ---------------- Optimización ----------------

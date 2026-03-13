@@ -11,18 +11,20 @@ JDouble = None
 JDoubleArray = None
 JDouble2DArray = None
 PSO = None
+NSGAII = None
 
 _jvm_lock = threading.Lock()
 _jvm_started = False
 
 def iniciar_jvm(classpath=None, force=False):
-    global JDouble, JDoubleArray, JDouble2DArray, PSO, _jvm_started
+    global JDouble, JDoubleArray, JDouble2DArray, PSO, NSGAII, _jvm_started
     with _jvm_lock:
         if jpype.isJVMStarted() and not force:
             JDouble = jpype.JDouble
             JDoubleArray = jpype.JArray(JDouble)
             JDouble2DArray = jpype.JArray(JDoubleArray)
             PSO = jpype.JClass("PSO")
+            NSGAII = jpype.JClass("NSGAII")
             _jvm_started = True
             return
 
@@ -47,6 +49,7 @@ def iniciar_jvm(classpath=None, force=False):
         JDoubleArray = jpype.JArray(JDouble)
         JDouble2DArray = jpype.JArray(JDoubleArray)
         PSO = jpype.JClass("PSO")
+        NSGAII = jpype.JClass("NSGAII")
         _jvm_started = True
 
 

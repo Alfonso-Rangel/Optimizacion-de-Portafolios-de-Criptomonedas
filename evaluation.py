@@ -418,3 +418,81 @@ def graficar_barras_pesos(pesos_por_estrategia, nombres_activos, titulo_general=
         
         plt.tight_layout()
         plt.show()
+
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+
+def graficar_hipervolumen(df_hv):
+
+    plt.figure(figsize=(10,5))
+
+    for col in df_hv.columns[:-1]:
+        plt.plot(df_hv.index, df_hv[col], alpha=0.3)
+
+    plt.plot(df_hv.index, df_hv["Promedio"], linewidth=3)
+
+    plt.title("Hipervolumen a lo largo del tiempo")
+    plt.xlabel("Fecha")
+    plt.ylabel("Hipervolumen")
+
+    plt.tight_layout()
+    plt.savefig("figures/hipervolumen_temporal.png")
+    plt.close()
+
+
+def graficar_drawdown(retornos_por_estrategia):
+
+    plt.figure(figsize=(10,5))
+
+    for name, series in retornos_por_estrategia.items():
+
+        wealth = (1 + series).cumprod()
+        peak = wealth.cummax()
+        dd = (wealth - peak) / peak
+
+        plt.plot(dd, label=name)
+
+    plt.title("Drawdown por estrategia")
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("figures/drawdown.png")
+    plt.close()
+
+
+def graficar_boxplot_retornos(retornos_por_estrategia):
+
+    data = [retornos_por_estrategia[k] for k in retornos_por_estrategia]
+
+    plt.figure(figsize=(8,5))
+
+    plt.boxplot(data, labels=list(retornos_por_estrategia.keys()))
+
+    plt.title("Distribución de retornos por estrategia")
+
+    plt.tight_layout()
+    plt.savefig("figures/boxplot_retornos.png")
+    plt.close()
+
+
+def graficar_pesos_promedio(pesos_por_estrategia):
+
+    promedio = {}
+
+    for strat, pesos in pesos_por_estrategia.items():
+
+        df = pd.DataFrame(pesos).T
+        promedio[strat] = df.mean()
+
+    df_plot = pd.DataFrame(promedio)
+
+    df_plot.plot(kind="bar", figsize=(12,6))
+
+    plt.title("Pesos promedio del portafolio")
+
+    plt.tight_layout()
+    plt.savefig("figures/pesos_portafolio.png")
+    plt.close()
