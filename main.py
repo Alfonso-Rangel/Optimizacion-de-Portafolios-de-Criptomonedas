@@ -68,7 +68,7 @@ def seleccionar_max_sharpe(frente_obj):
     obj = np.array(frente_obj)
 
     # f1 = -Sharpe
-    return np.argmin(obj[:,0])
+    return np.argmin(obj[:,1])
 
 def num_solutions(front):
 
