@@ -15,371 +15,260 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import iniciar_jvm, np_a_java_array, np_a_java_2darray, java_list_of_doublearrays_to_numpy
 from data_loader import cargar_datos_experimento
 import utils as U
-
 from evaluation import (
-    mostrar_resumen_metrica,
-    graficar_retornos_acumulados,
-    summary_metrics,
-    mostrar_tabla_comparativa,
-    graficar_hipervolumen_comparado,
-    graficar_drawdown,
-    graficar_boxplot_retornos,
-    graficar_barras_pesos,
-    graficar_frente_promedio,
-    graficar_dominancia_frentes,
-    graficar_frentes_pareto
+    graficar_retornos_acumulados, resumen_metricas, mostrar_tabla_comparativa,
+    graficar_hipervolumen_comparado, graficar_drawdown, graficar_barras_pesos
 )
 
-FRECUENCIAS = {
-    'media_semana': 84,
-    'semana': 168,
-    'dos_semanas': 336,
-    'cuatro_semanas': 672,
-    'ocho_semanas': 1344
-}
+# ================= CONFIG =================
+FRECUENCIAS = {'media_semana': 84, 'semana': 168, 'dos_semanas': 336, 'cuatro_semanas': 672, 'ocho_semanas': 1344}
 
 VENTANA_HORAS = FRECUENCIAS["dos_semanas"]
-PASO_HORAS = FRECUENCIAS['cuatro_semanas']
+PASO_HORAS    = FRECUENCIAS['cuatro_semanas']
+N_CORRIDAS    = 5
+ALGORITMOS    = ["mopso", "nsga2"]
 
-N_CORRIDAS = 3
+ESTRATEGIAS = ["mopso", "nsga2", "curtosis"]
+#ESTRATEGIAS = ["naive", "sharpe", "curtosis"]
+#ESTRATEGIAS = ["mopso", "nsga2"]
 
-ALGORITMOS = ["mopso", "nsga2"]
-ESTRATEGIAS = ["mopso", "nsga2", "sharpe"]
+# ================= NORMALIZACIÓN =================
 
-def seleccionar_del_frente(frente_obj):
+def normalizar_frente(f):
+    if len(f) == 0:
+        return f
+    min_ = f.min(axis=0)
+    max_ = f.max(axis=0)
+    rango = np.where((max_ - min_) == 0, 1, (max_ - min_))
+    return (f - min_) / rango
 
-    if len(frente_obj) == 0:
-        return -1
-
-    obj = np.array(frente_obj)
-
-    mins, maxs = obj.min(axis=0), obj.max(axis=0)
-    rango = np.where(maxs - mins == 0, 1.0, maxs - mins)
-
-    norm = (obj - mins) / rango
-
-    return np.argmin(np.sum(norm**2, axis=1))
-
-def seleccionar_max_sharpe(frente_obj):
-
-    if len(frente_obj) == 0:
-        return -1
-
-    obj = np.array(frente_obj)
-
-    # f1 = -Sharpe
-    return np.argmin(obj[:,1])
-
-def num_solutions(front):
-
-    if front is None or len(front) == 0:
-        return 0
-
-    return len(front)
-
+# ================= MÉTRICAS =================
 
 def spacing(front):
-
     if len(front) < 2:
         return 0
+    d = np.array([
+        min(np.sum(np.abs(front[i] - front[j]))
+            for j in range(len(front)) if i != j)
+        for i in range(len(front))
+    ])
+    return np.sqrt(np.sum((d - d.mean()) ** 2) / (len(front) - 1))
 
-    d = []
-
-    for i in range(len(front)):
-
-        dist = []
-
-        for j in range(len(front)):
-
-            if i != j:
-                dist.append(np.sum(np.abs(front[i] - front[j])))
-
-        d.append(min(dist))
-
-    d = np.array(d)
-
-    return np.sqrt(np.sum((d - d.mean())**2) / (len(front)-1))
 
 def spread(front):
-
     if len(front) < 2:
         return 0
+    front = front[np.argsort(front[:, 0])]
+    dist  = np.linalg.norm(np.diff(front, axis=0), axis=1)
+    d_bar = dist.mean()
+    return (dist[0] + dist[-1] + np.sum(np.abs(dist - d_bar))) / \
+           (dist[0] + dist[-1] + len(dist) * d_bar)
 
-    front = front[np.argsort(front[:,0])]
 
-    distances = np.linalg.norm(np.diff(front, axis=0), axis=1)
+def igd(front, ref):
+    if len(front) == 0 or len(ref) == 0:
+        return np.inf
+    return np.mean([
+        np.min(np.linalg.norm(front - r, axis=1)) for r in ref
+    ])
 
-    d_bar = distances.mean()
+# ================= SELECCIÓN =================
+def portafolio_naive(n_assets):
+    return np.full(n_assets, 1.0 / n_assets)
 
-    df = distances[0]
-    dl = distances[-1]
+def seleccionar_indice(frente_obj, modo="utopia"):
+    if len(frente_obj) == 0:
+        return -1
 
-    delta = (df + dl + np.sum(np.abs(distances - d_bar))) / (
-        df + dl + (len(distances)) * d_bar
-    )
+    obj = np.array(frente_obj)
 
-    return delta
+    if modo == "sharpe":
+        return np.argmin(obj[:, 1])
+    
+    if modo == "curtosis":
+        return np.argmin(obj[:, 0])
+
+    rango = np.where((r := obj.max(0) - obj.min(0)) == 0, 1.0, r)
+    return np.argmin(np.sum(((obj - obj.min(0)) / rango) ** 2, axis=1))
+
+# ================= UTILIDADES =================
 
 def normalizar_pesos(w):
-
-    w = np.asarray(w, dtype=float)
-    w[w < 0] = 0.0
-
+    w = np.maximum(np.asarray(w, float), 0)
     s = w.sum()
+    return w / s if s else np.full_like(w, 1 / len(w))
 
-    if s == 0:
-        return np.full_like(w, 1.0 / len(w))
+# ================= EJECUCIÓN =================
 
-    return w / s
-
-
-def ejecutar_NSGAII(ret_ent, rf_ent):
-
+def ejecutar_algoritmo(ret_ent, rf_ent, algoritmo):
     iniciar_jvm()
+    ret_java = np_a_java_2darray(ret_ent.to_numpy())
+    rf_java  = np_a_java_array(rf_ent)
 
-    retornos_java = np_a_java_2darray(ret_ent.to_numpy())
-    rf_java = np_a_java_array(rf_ent)
+    solver = U.MOPSO(ret_java) if algoritmo == "mopso" else U.NSGAII(ret_java)
+    solver.optimizar(rf_java)
 
-    nsga = U.NSGAII(retornos_java)
-    nsga.optimizar(rf_java)
-
-    front_pos = java_list_of_doublearrays_to_numpy(nsga.getFrentePos())
-    front_obj = java_list_of_doublearrays_to_numpy(nsga.getFrenteObj())
+    front_pos = java_list_of_doublearrays_to_numpy(solver.getFrentePos())
+    front_obj = java_list_of_doublearrays_to_numpy(solver.getFrenteObj())
 
     if len(front_obj) == 0:
-        w = np.full(ret_ent.shape[1], 1.0/ret_ent.shape[1])
-        return w, w, []
+        w = np.full(ret_ent.shape[1], 1.0 / ret_ent.shape[1])
+        return w, w, np.array([])
 
-    idx_utopia = seleccionar_del_frente(front_obj)
-    idx_sharpe = seleccionar_max_sharpe(front_obj)
+    w_utopia = normalizar_pesos(front_pos[seleccionar_indice(front_obj, "utopia")])
+    w_sharpe = normalizar_pesos(front_pos[seleccionar_indice(front_obj, "sharpe")])
+    w_curtosis   = normalizar_pesos(front_pos[seleccionar_indice(front_obj, "curtosis")])
 
-    w_utopia = normalizar_pesos(np.array(front_pos[idx_utopia]))
-    w_sharpe = normalizar_pesos(np.array(front_pos[idx_sharpe]))
+    return w_utopia, w_sharpe, w_curtosis, np.array(front_obj)
 
-    return w_utopia, w_sharpe, [np.array(front_obj)]
-
-def ejecutar_MOPSO(ret_ent, rf_ent):
-
-    iniciar_jvm()
-
-    retornos_java = np_a_java_2darray(ret_ent.to_numpy())
-    rf_java = np_a_java_array(rf_ent)
-
-    pso = U.PSO(retornos_java)
-    pso.optimizar(rf_java)
-
-    front_pos = java_list_of_doublearrays_to_numpy(pso.getFrentePos())
-    front_obj = java_list_of_doublearrays_to_numpy(pso.getFrenteObj())
-
-    if len(front_obj) == 0:
-        w = np.full(ret_ent.shape[1], 1.0/ret_ent.shape[1])
-        return w, w, []
-
-    idx_utopia = seleccionar_del_frente(front_obj)
-    idx_sharpe = seleccionar_max_sharpe(front_obj)
-
-    w_utopia = normalizar_pesos(np.array(front_pos[idx_utopia]))
-    w_sharpe = normalizar_pesos(np.array(front_pos[idx_sharpe]))
-
-    return w_utopia, w_sharpe, [np.array(front_obj)]
-
-def expandir_pesos(w_sub, sub_cols, all_cols):
-
-    w_full = np.zeros(len(all_cols))
-
-    col_to_idx = {c: i for i, c in enumerate(sub_cols)}
-
-    for i, c in enumerate(all_cols):
-        if c in col_to_idx:
-            w_full[i] = w_sub[col_to_idx[c]]
-
-    return normalizar_pesos(w_full)
-
-
-def procesar_ventana(ret_ent, rf_ent):
-
-    valid_cols = [c for c in ret_ent.columns if ret_ent[c].notna().all()]
-
-    if len(valid_cols) < max(2, len(ret_ent.columns)//2):
-        valid_cols = list(ret_ent.columns)
-
-    w_mopso, w_mopso_sharpe, fr_mopso = ejecutar_MOPSO(ret_ent[valid_cols], rf_ent)
-    w_nsga, w_nsga_sharpe, fr_nsga = ejecutar_NSGAII(ret_ent[valid_cols], rf_ent)
-
-    all_cols = list(ret_ent.columns)
-
-    resultados = {
-        "mopso": expandir_pesos(w_mopso, valid_cols, all_cols),
-        "nsga2": expandir_pesos(w_nsga, valid_cols, all_cols),
-
-        # nuevo benchmark
-        "sharpe": expandir_pesos(w_nsga_sharpe, valid_cols, all_cols)
-    }
-
-    frentes = {
-        "mopso": fr_mopso,
-        "nsga2": fr_nsga
-    }
-
-    return resultados, frentes
-
+# ================= MAIN =================
 
 def main():
-
     os.makedirs("figures", exist_ok=True)
-
     iniciar_jvm()
-
-    retornos, rf_horaria, fechas_indice, n_activos = cargar_datos_experimento()
-
-    matriz_frentes = {
-        alg: [[] for _ in range(N_CORRIDAS)]
-        for alg in ALGORITMOS
-    }
-
+    retornos, rf_horaria, fechas_indice, _ = cargar_datos_experimento()
+    matriz_frentes = {alg: [[] for _ in range(N_CORRIDAS)] for alg in ALGORITMOS}
     fechas_ventanas = []
 
-    retornos_por_estrategia = {k: [] for k in ESTRATEGIAS}
-    pesos_por_estrategia = {k: {} for k in ESTRATEGIAS}
+    retornos_runs = {
+        strat: [[] for _ in range(N_CORRIDAS)]
+        for strat in ESTRATEGIAS
+    }
 
+    pesos_runs = {
+        strat: [{} for _ in range(N_CORRIDAS)]
+        for strat in ESTRATEGIAS
+    }
+
+    num_ventanas = (len(retornos) - VENTANA_HORAS) // PASO_HORAS
+
+    # ===== RUNS =====
     for n in range(N_CORRIDAS):
+        print(f"Corrida {n+1}")
 
-        print(f"\n>>> Iniciando Corrida {n+1}/{N_CORRIDAS}")
-
-        num_ventanas = (len(retornos) - VENTANA_HORAS) // PASO_HORAS
-
-        pbar = trange(num_ventanas)
-
-        for i in pbar:
-
-            ini = i * PASO_HORAS
-            fin_ent = ini + VENTANA_HORAS
+        for i in trange(num_ventanas):
+            ini, fin_ent = i * PASO_HORAS, i * PASO_HORAS + VENTANA_HORAS
             fin_inv = min(fin_ent + PASO_HORAS, len(retornos))
-
-            if fin_inv - fin_ent == 0:
+            if fin_inv == fin_ent:
                 break
 
             ret_ent = retornos.iloc[ini:fin_ent]
-            rf_ent = rf_horaria[ini:fin_ent].astype(float)
+            rf_ent  = rf_horaria[ini:fin_ent].astype(float)
 
-            pesos_ventana, frentes = procesar_ventana(ret_ent, rf_ent)
+            resultados = {}
+            resultados["naive"] = portafolio_naive(ret_ent.shape[1])
 
             for alg in ALGORITMOS:
-                frente = frentes[alg][0] if frentes[alg] else np.array([])
-                matriz_frentes[alg][n].append(frente)
+                w_u, w_s, w_k, f = ejecutar_algoritmo(ret_ent, rf_ent, alg)
 
-            if n == 0:
-                fechas_ventanas.append(fechas_indice[fin_ent])
+                resultados[alg] = w_u
+                matriz_frentes[alg][n].append(f)
 
-            if n == N_CORRIDAS - 1:
+                if alg == "mopso":
+                    resultados["sharpe"]   = w_s
+                    resultados["curtosis"] = w_k
 
-                ret_inv = retornos.iloc[fin_ent:fin_inv]
-                rf_inv = rf_horaria[fin_ent:fin_inv].astype(float)
+            # inversión en TODAS las corridas
+            ret_inv = retornos.iloc[fin_ent:fin_inv]
+            rf_inv  = pd.Series(rf_horaria[fin_ent:fin_inv].astype(float), index=ret_inv.index)
+            fecha_inv = fechas_indice[fin_ent]
 
-                rf_series = pd.Series(rf_inv, index=ret_inv.index)
+            for strat in ESTRATEGIAS:
+                pesos_runs[strat][n][fecha_inv] = resultados[strat]
 
-                fecha_inv = fechas_indice[fin_ent]
+                serie = (ret_inv * resultados[strat]).sum(axis=1) - rf_inv
+                retornos_runs[strat][n].append(serie)
 
-                for strat in ESTRATEGIAS:
-                    w = pesos_ventana[strat]
-                    pesos_por_estrategia[strat][fecha_inv] = w
-                    retornos_por_estrategia[strat].append(
-                        (ret_inv * w).sum(axis=1) - rf_series
-                    )
+    # ===== MÉTRICAS POR VENTANA =====
+    hv_dict = {alg: [] for alg in ALGORITMOS}
 
-    # HIPERVOLUMEN
+    for w in range(num_ventanas):
+        union = []
+        for n in range(N_CORRIDAS):
+            for alg in ALGORITMOS:
+                f = matriz_frentes[alg][n][w]
+                if len(f) > 0:
+                    union.append(f)
 
-    hv_dict = {}
-
-    for alg in ALGORITMOS:
-
-        puntos = []
-
-        for c in range(N_CORRIDAS):
-            for f in matriz_frentes[alg][c]:
-                if f.size > 0:
-                    puntos.append(f)
-
-        if not puntos:
+        if not union:
             continue
 
-        puntos_concat = np.vstack(puntos)
+        ref = normalizar_frente(np.vstack(union))
+        ref_point = np.max(ref, axis=0) * 1.05
+        hv = HV(ref_point=ref_point)
 
-        nadir = np.max(puntos_concat, axis=0)
-        ref = nadir + np.abs(nadir) * 0.05
+        for alg in ALGORITMOS:
+            vals = []
+            for n in range(N_CORRIDAS):
+                f = matriz_frentes[alg][n][w]
+                if len(f) == 0:
+                    continue
+                min_ref = ref.min(axis=0)
+                max_ref = ref.max(axis=0)
+                rango = np.where((max_ref - min_ref) == 0, 1, (max_ref - min_ref))
+                f_norm = (f - min_ref) / rango
+                vals.append(hv.do(f_norm))
 
-        hv = HV(ref_point=ref)
+            hv_dict[alg].append(np.mean(vals) if vals else 0)
 
-        hv_results = np.zeros((len(fechas_ventanas), N_CORRIDAS))
+    df_mopso = pd.DataFrame({
+        "Promedio": hv_dict["mopso"]
+    })
 
-        for c in range(N_CORRIDAS):
-            for f in range(len(fechas_ventanas)):
+    df_nsga = pd.DataFrame({
+        "Promedio": hv_dict["nsga2"]
+    })
+    graficar_hipervolumen_comparado(df_mopso, df_nsga)
 
-                frente = matriz_frentes[alg][c][f]
+    # ===== MÉTRICAS AGREGADAS =====
+    for alg in ALGORITMOS:
+        all_f = [f for c in range(N_CORRIDAS) for f in matriz_frentes[alg][c] if len(f) > 0]
+        print(f"\n{alg}")
+        print("spacing:", np.mean([spacing(normalizar_frente(f)) for f in all_f]))
+        print("spread:",  np.mean([spread(normalizar_frente(f))  for f in all_f]))
 
-                hv_results[f, c] = hv.do(frente) if frente.size > 0 else 0
-
-        df = pd.DataFrame(
-            hv_results,
-            index=fechas_ventanas,
-            columns=[f"Corrida_{i+1}" for i in range(N_CORRIDAS)]
-        )
-
-        df["Promedio"] = df.mean(axis=1)
-
-        hv_dict[alg] = df
-
-    graficar_hipervolumen_comparado(hv_dict["mopso"], hv_dict["nsga2"])
+    # ===== FINANZAS =====
+    retornos_por_corrida = {s: [] for s in ESTRATEGIAS}
 
     for strat in ESTRATEGIAS:
-        lst = retornos_por_estrategia[strat]
-        retornos_por_estrategia[strat] = pd.concat(lst)
-    
-    metricas_frente = {
-        alg: {"spacing":[], "spread":[], "n":[]}
-        for alg in ALGORITMOS
-    }
+        for n in range(N_CORRIDAS):
+            if retornos_runs[strat][n]:
+                retornos_por_corrida[strat].append(
+                    pd.concat(retornos_runs[strat][n])
+                )
+    retornos_promedio = {}
 
-    for alg in ALGORITMOS:
-        for c in range(N_CORRIDAS):
-            for f in matriz_frentes[alg][c]:
-                if f.size == 0:
-                    continue
+    for strat in ESTRATEGIAS:
+        df = pd.concat(retornos_por_corrida[strat], axis=1)
+        # promedio por timestamp (ignora NaN si alguna corrida no tiene ese punto)
+        retornos_promedio[strat] = df.mean(axis=1)
 
-                metricas_frente[alg]["spacing"].append(spacing(f))
-                metricas_frente[alg]["spread"].append(spread(f))
-                metricas_frente[alg]["n"].append(len(f))
-    for alg in ALGORITMOS:
-        print("\n", alg)
-        print("solutions:", np.mean(metricas_frente[alg]["n"]))
-        print("spacing:", np.mean(metricas_frente[alg]["spacing"]))
-        print("spread:", np.mean(metricas_frente[alg]["spread"]))
+    pesos_por_estrategia = {}
 
-    metricas = [summary_metrics(retornos_por_estrategia[s], s) for s in ESTRATEGIAS]
+    for strat in ESTRATEGIAS:
+        acumulado = {}
 
-    mostrar_resumen_metrica(metricas)
+        for n in range(N_CORRIDAS):
+            for fecha, w in pesos_runs[strat][n].items():
+                acumulado.setdefault(fecha, []).append(w)
+
+        pesos_por_estrategia[strat] = {
+            fecha: np.mean(ws, axis=0)
+            for fecha, ws in acumulado.items()
+        }
+
+    metricas = [
+        resumen_metricas(retornos_promedio[s], s)
+        for s in ESTRATEGIAS
+    ]
+
     mostrar_tabla_comparativa(metricas)
-
-    graficar_retornos_acumulados(retornos_por_estrategia)
-    graficar_drawdown(retornos_por_estrategia)
-    graficar_boxplot_retornos(retornos_por_estrategia)
-
+    graficar_retornos_acumulados(retornos_promedio)
+    graficar_drawdown(retornos_promedio)
     graficar_barras_pesos(pesos_por_estrategia, list(retornos.columns))
-
-    graficar_frente_promedio(matriz_frentes)
-
-    graficar_dominancia_frentes(matriz_frentes)
-
-    # ejemplo con primera ventana
-    graficar_frentes_pareto(
-        matriz_frentes["mopso"][0][0],
-        matriz_frentes["nsga2"][0][0]
-    )
 
 
 if __name__ == "__main__":
-
-    if sys.platform.startswith('win'):
-        mp.freeze_support()
-
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     main()

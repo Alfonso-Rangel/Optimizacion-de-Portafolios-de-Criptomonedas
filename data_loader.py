@@ -19,7 +19,7 @@ ARCHIVOS = [
 ]
 
 FECHA_INICIO_SIMULACION = "2022-02-23"
-FECHA_FIN_SIMULACION = "2025-12-01"
+FECHA_FIN_SIMULACION = "2026-04-13"
 
 def leer_precios_con_limpieza(archivos):
     dfs = []

@@ -10,27 +10,27 @@ warnings.filterwarnings('ignore', message='The default fill_method')
 JDouble = None
 JDoubleArray = None
 JDouble2DArray = None
-PSO = None
+MOPSO = None
 NSGAII = None
 
 _jvm_lock = threading.Lock()
 _jvm_started = False
 
 def iniciar_jvm(classpath=None, force=False):
-    global JDouble, JDoubleArray, JDouble2DArray, PSO, NSGAII, _jvm_started
+    global JDouble, JDoubleArray, JDouble2DArray, MOPSO, NSGAII, _jvm_started
     with _jvm_lock:
         if jpype.isJVMStarted() and not force:
             JDouble = jpype.JDouble
             JDoubleArray = jpype.JArray(JDouble)
             JDouble2DArray = jpype.JArray(JDoubleArray)
-            PSO = jpype.JClass("PSO")
+            MOPSO = jpype.JClass("MOPSO")
             NSGAII = jpype.JClass("NSGAII")
             _jvm_started = True
             return
 
         if classpath is None:
             # Agregar la carpeta pso al classpath
-            pso_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pso")
+            pso_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "optimizacion")
             classpath = [".", pso_dir]
         elif isinstance(classpath, str):
             classpath = [classpath]
@@ -48,7 +48,7 @@ def iniciar_jvm(classpath=None, force=False):
         JDouble = jpype.JDouble
         JDoubleArray = jpype.JArray(JDouble)
         JDouble2DArray = jpype.JArray(JDoubleArray)
-        PSO = jpype.JClass("PSO")
+        MOPSO = jpype.JClass("MOPSO")
         NSGAII = jpype.JClass("NSGAII")
         _jvm_started = True
 
